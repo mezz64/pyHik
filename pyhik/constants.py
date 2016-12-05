@@ -30,4 +30,5 @@ SENSOR_MAP = {
     'illaccess': 'Illegal Access',
     'videomismatch': 'Video Mismatch',
     'badvideo': 'Bad Video',
+    'PIR': 'PIR Alarm',
 }

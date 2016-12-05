@@ -128,8 +128,16 @@ class HikCamera(object):
         events_available = self.get_event_triggers()
         if events_available:
             for event in events_available:
-                self.event_states[SENSOR_MAP[event]] = [
-                    False, 1, 0, datetime.datetime.now()]
+                try:
+                    self.event_states[SENSOR_MAP[event]] = [
+                        False, 1, 0, datetime.datetime.now()]
+                except KeyError:
+                    # Sensor type doesn't have a known friendly name
+                    self.event_states[event] = [
+                        False, 1, 0, datetime.datetime.now()]
+                    _LOGGING.warning('Sensor type "%s" is added without '
+                                     'a friendly name.', event)
+
             _LOGGING.debug('Initialized Dictionary: %s', self.event_states)
         else:
             _LOGGING.debug('No Events available in dictionary.')
