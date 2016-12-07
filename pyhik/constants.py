@@ -16,12 +16,12 @@ DEFAULT_HEADERS = {
 }
 
 SENSOR_MAP = {
-    'VMD': 'Motion',
+    'VMD-1': 'Motion',
     'IO': 'IO Trigger',
-    'linedetection': 'Line Crossing',
-    'fielddetection': 'Field Detection',
-    'videoloss': 'Video Loss',
-    'tamperdetection': 'Tamper Detection',
+    'Linedetection-1': 'Line Crossing',
+    'fielddetection-1': 'Field Detection',
+    'videoloss-1': 'Video Loss',
+    'tamper-1': 'Tamper Detection',
     'shelteralarm': 'Shelter Alarm',
     'diskfull': 'Disk Full',
     'diskerror': 'Disk Error',
@@ -33,5 +33,12 @@ SENSOR_MAP = {
     'PIR': 'PIR Alarm',
     'callhelp': 'Help Call',
     'facedetection': 'Face Detection',
-    'WLSensor': 'WL Alarm',
+    'WLSensor-1': 'WL Alarm 1',
+    'WLSensor-2': 'WL Alarm 2',
+    'WLSensor-3': 'WL Alarm 3',
+    'WLSensor-4': 'WL Alarm 4',
+    'WLSensor-5': 'WL Alarm 5',
+    'WLSensor-6': 'WL Alarm 6',
+    'WLSensor-7': 'WL Alarm 7',
+    'WLSensor-8': 'WL Alarm 8',
 }

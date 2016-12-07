@@ -75,7 +75,7 @@ class HikCamera(object):
 
         self.root_url = '{}:{}'.format(host, port)
 
-        self.etype = ''
+        self.eid = ''
         self.estate = False
         self.echid = 0
         self.ecount = 0
@@ -145,7 +145,6 @@ class HikCamera(object):
     def get_event_triggers(self):
         """Returns list of supported events."""
         events = []
-        events_count = {}
 
         url = '%s/ISAPI/Event/triggers' % self.root_url
 
@@ -162,7 +161,7 @@ class HikCamera(object):
 
             for eventtrigger in content[0].findall(
                     element_query('EventTrigger')):
-                ettype = eventtrigger.find(element_query('eventType'))
+                etid = eventtrigger.find(element_query('id'))
                 etnotify = eventtrigger.find(
                     element_query('EventTriggerNotificationList'))
 
@@ -172,23 +171,16 @@ class HikCamera(object):
                     if ntype.text == 'center':
                         """
                         If we got this far we found an event that we want to
-                        track. Need to check if it's the only one in the list.
+                        track. Id's are unique so just add them all.
                         """
-                        if ettype.text in events:
-                            # Already there
-                            events_count[ettype.text] += 1
-                            events.append('{} {}'.format(
-                                ettype.text, events_count[ettype.text]))
-                        else:
-                            events_count[ettype.text] = 1
-                            events.append(ettype.text)
+                        events.append(etid.text)
 
         except (AttributeError, ET.ParseError) as err:
             _LOGGING.error(
                 'There was a problem finding an element: %s', err)
             return None
 
-        _LOGGING.debug('Found events: %s', events_count)
+        _LOGGING.debug('Found events: %s', events)
         self.hik_request.close()
         return events
 
@@ -283,8 +275,15 @@ class HikCamera(object):
     def process_stream(self, tree):
         """Process incoming event stream packets."""
         try:
-            self.etype = SENSOR_MAP[tree.findall(
-                element_query('eventType'))[0].text]
+            self.eid = SENSOR_MAP[tree.findall(
+                element_query('id'))[0].text]
+        except KeyError:
+            self.eid = tree.findall(element_query('id'))[0].text
+        except (AttributeError, IndexError) as err:
+            _LOGGING.error('Problem finding attribute: %s', err)
+            return
+
+        try:
             self.estate = tree.findall(element_query('eventState'))[0].text
             self.echid = tree.findall(element_query('channelID'))[0].text
             self.ecount = tree.findall(
@@ -293,12 +292,12 @@ class HikCamera(object):
             _LOGGING.error('Problem finding attribute: %s', err)
             return
         # Track state if it's in the event list.
-        if len(self.etype) > 0 and self.etype in self.event_states:
+        if len(self.eid) > 0 and self.eid in self.event_states:
             # Determine if state has changed
             # If so, update, otherwise do nothing
             self.estate = (self.estate == 'active')
-            old_state = self.event_states[self.etype][0]
-            self.event_states[self.etype] = [
+            old_state = self.event_states[self.eid][0]
+            self.event_states[self.eid] = [
                 self.estate, int(self.echid), int(self.ecount),
                 datetime.datetime.now()]
             if self.estate != old_state:
@@ -309,18 +308,18 @@ class HikCamera(object):
         # Some events don't post an inactive XML, only active.
         # If we don't get an active update for 5 seconds we can
         # assume the event is no longer active and update accordingly.
-        for self.etype, eprop in self.event_states.items():
+        for self.eid, eprop in self.event_states.items():
             if eprop[3] is not None:
                 sec_elap = ((datetime.datetime.now()-eprop[3]).total_seconds())
                 # print('Seconds since last update: {}'.format(sec_elap))
                 if sec_elap > 5 and eprop[0] is True:
-                    self.event_states[self.etype] = [
+                    self.event_states[self.eid] = [
                         False, eprop[1], eprop[2], datetime.datetime.now()]
                     self.publish_changes()
 
     def publish_changes(self):
         """Post updates for specified alarm type."""
         _LOGGING.debug('%s Update: %s, %s',
-                       self.name, self.etype, self.event_states[self.etype])
+                       self.name, self.eid, self.event_states[self.eid])
         signal = 'ValueChanged.{}'.format(self.cam_id)
-        dispatcher.send(signal=signal, sender=self.etype)
+        dispatcher.send(signal=signal, sender=self.eid)
