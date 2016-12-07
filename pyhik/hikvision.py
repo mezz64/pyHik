@@ -135,8 +135,8 @@ class HikCamera(object):
                     # Sensor type doesn't have a known friendly name
                     self.event_states[event] = [
                         False, 1, 0, datetime.datetime.now()]
-                    _LOGGING.warning('Sensor type "%s" is added without '
-                                     'a friendly name.', event)
+                    # _LOGGING.warning('Sensor type "%s" is added without '
+                    #                  'a friendly name.', event)
 
             _LOGGING.debug('Initialized Dictionary: %s', self.event_states)
         else:
@@ -145,6 +145,7 @@ class HikCamera(object):
     def get_event_triggers(self):
         """Returns list of supported events."""
         events = []
+        events_count = {}
 
         url = '%s/ISAPI/Event/triggers' % self.root_url
 
@@ -169,14 +170,25 @@ class HikCamera(object):
                     ntype = notifytrigger.find(
                         element_query('notificationMethod'))
                     if ntype.text == 'center':
-                        events.append(ettype.text)
+                        """
+                        If we got this far we found an event that we want to
+                        track. Need to check if it's the only one in the list.
+                        """
+                        if ettype.text in events:
+                            # Already there
+                            events_count[ettype.text] += 1
+                            events.append('{} {}'.format(
+                                ettype.text, events_count[ettype.text]))
+                        else:
+                            events_count[ettype.text] = 1
+                            events.append(ettype.text)
 
         except (AttributeError, ET.ParseError) as err:
             _LOGGING.error(
                 'There was a problem finding an element: %s', err)
             return None
 
-        _LOGGING.debug('Found events: %s', events)
+        _LOGGING.debug('Found events: %s', events_count)
         self.hik_request.close()
         return events
 
