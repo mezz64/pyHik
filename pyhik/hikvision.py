@@ -75,7 +75,7 @@ class HikCamera(object):
 
         self.root_url = '{}:{}'.format(host, port)
 
-        self.eid = ''
+        self.etype = ''
         self.estate = False
         self.echid = 0
         self.ecount = 0
@@ -133,10 +133,9 @@ class HikCamera(object):
                         False, 1, 0, datetime.datetime.now()]
                 except KeyError:
                     # Sensor type doesn't have a known friendly name
-                    self.event_states[event] = [
-                        False, 1, 0, datetime.datetime.now()]
-                    # _LOGGING.warning('Sensor type "%s" is added without '
-                    #                  'a friendly name.', event)
+                    # We can't reliably handle it at this time...
+                    _LOGGING.warning(
+                        'Sensor type "%s" is currently unsupported.', event)
 
             _LOGGING.debug('Initialized Dictionary: %s', self.event_states)
         else:
@@ -161,7 +160,7 @@ class HikCamera(object):
 
             for eventtrigger in content[0].findall(
                     element_query('EventTrigger')):
-                etid = eventtrigger.find(element_query('id'))
+                ettype = eventtrigger.find(element_query('eventType'))
                 etnotify = eventtrigger.find(
                     element_query('EventTriggerNotificationList'))
 
@@ -171,9 +170,9 @@ class HikCamera(object):
                     if ntype.text == 'center':
                         """
                         If we got this far we found an event that we want to
-                        track. Id's are unique so just add them all.
+                        track.
                         """
-                        events.append(etid.text)
+                        events.append(ettype.text)
 
         except (AttributeError, ET.ParseError) as err:
             _LOGGING.error(
@@ -275,15 +274,8 @@ class HikCamera(object):
     def process_stream(self, tree):
         """Process incoming event stream packets."""
         try:
-            self.eid = SENSOR_MAP[tree.findall(
-                element_query('id'))[0].text]
-        except KeyError:
-            self.eid = tree.findall(element_query('id'))[0].text
-        except (AttributeError, IndexError) as err:
-            _LOGGING.error('Problem finding attribute: %s', err)
-            return
-
-        try:
+            self.etype = SENSOR_MAP[tree.findall(
+                element_query('eventType'))[0].text]
             self.estate = tree.findall(element_query('eventState'))[0].text
             self.echid = tree.findall(element_query('channelID'))[0].text
             self.ecount = tree.findall(
@@ -292,12 +284,12 @@ class HikCamera(object):
             _LOGGING.error('Problem finding attribute: %s', err)
             return
         # Track state if it's in the event list.
-        if len(self.eid) > 0 and self.eid in self.event_states:
+        if len(self.etype) > 0 and self.etype in self.event_states:
             # Determine if state has changed
             # If so, update, otherwise do nothing
             self.estate = (self.estate == 'active')
-            old_state = self.event_states[self.eid][0]
-            self.event_states[self.eid] = [
+            old_state = self.event_states[self.etype][0]
+            self.event_states[self.etype] = [
                 self.estate, int(self.echid), int(self.ecount),
                 datetime.datetime.now()]
             if self.estate != old_state:
@@ -308,18 +300,18 @@ class HikCamera(object):
         # Some events don't post an inactive XML, only active.
         # If we don't get an active update for 5 seconds we can
         # assume the event is no longer active and update accordingly.
-        for self.eid, eprop in self.event_states.items():
+        for self.etype, eprop in self.event_states.items():
             if eprop[3] is not None:
                 sec_elap = ((datetime.datetime.now()-eprop[3]).total_seconds())
                 # print('Seconds since last update: {}'.format(sec_elap))
                 if sec_elap > 5 and eprop[0] is True:
-                    self.event_states[self.eid] = [
+                    self.event_states[self.etype] = [
                         False, eprop[1], eprop[2], datetime.datetime.now()]
                     self.publish_changes()
 
     def publish_changes(self):
         """Post updates for specified alarm type."""
         _LOGGING.debug('%s Update: %s, %s',
-                       self.name, self.eid, self.event_states[self.eid])
+                       self.name, self.etype, self.event_states[self.etype])
         signal = 'ValueChanged.{}'.format(self.cam_id)
-        dispatcher.send(signal=signal, sender=self.eid)
+        dispatcher.send(signal=signal, sender=self.etype)
