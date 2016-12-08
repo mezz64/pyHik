@@ -31,7 +31,5 @@ SENSOR_MAP = {
     'videomismatch': 'Video Mismatch',
     'badvideo': 'Bad Video',
     'PIR': 'PIR Alarm',
-    'callhelp': 'Help Call',
     'facedetection': 'Face Detection',
-    'WLSensor': 'WL Alarm',
 }
