@@ -33,10 +33,6 @@ _LOGGING = logging.getLogger(__name__)
 logging.getLogger('requests').setLevel(logging.CRITICAL)
 
 
-def element_query(element):
-    """Build tree query for a given element."""
-    return '{%s}%s' % (XML_NAMESPACE, element)
-
 """
 Things still to do:
  - Support status of motion detection and turning on/off
@@ -62,6 +58,8 @@ class HikCamera(object):
         _LOGGING.debug("Initializing new hikvision device at: %s", host)
 
         self.event_states = {}
+
+        self.namespace = XML_NAMESPACE
 
         if not host:
             _LOGGING.error('Host not specified! Cannot continue.')
@@ -108,6 +106,10 @@ class HikCamera(object):
     def current_event_states(self):
         """Return Event states dictionary"""
         return self.event_states
+
+    def element_query(self, element):
+        """Build tree query for a given element."""
+        return '{%s}%s' % (self.namespace, element)
 
     def initialize(self):
         """Initialize deviceInfo and available events."""
@@ -159,14 +161,14 @@ class HikCamera(object):
             content = ET.fromstring(response.text)
 
             for eventtrigger in content[0].findall(
-                    element_query('EventTrigger')):
-                ettype = eventtrigger.find(element_query('eventType'))
+                    self.element_query('EventTrigger')):
+                ettype = eventtrigger.find(self.element_query('eventType'))
                 etnotify = eventtrigger.find(
-                    element_query('EventTriggerNotificationList'))
+                    self.element_query('EventTriggerNotificationList'))
 
                 for notifytrigger in etnotify:
                     ntype = notifytrigger.find(
-                        element_query('notificationMethod'))
+                        self.element_query('notificationMethod'))
                     if ntype.text == 'center':
                         """
                         If we got this far we found an event that we want to
@@ -198,6 +200,11 @@ class HikCamera(object):
 
         try:
             tree = ET.fromstring(response.text)
+            # Try to fetch namespace from XML
+            nmsp = tree.tag.split('}')[0].strip('{')
+            self.namespace = nmsp if nmsp.startswith('http') else XML_NAMESPACE
+            _LOGGING.debug('Using Namespace: %s', self.namespace)
+
             for item in tree:
                 tag = item.tag.split('}')[1]
                 device_info[tag] = item.text
@@ -276,11 +283,13 @@ class HikCamera(object):
         """Process incoming event stream packets."""
         try:
             self.etype = SENSOR_MAP[tree.findall(
-                element_query('eventType'))[0].text]
-            self.estate = tree.findall(element_query('eventState'))[0].text
-            self.echid = tree.findall(element_query('channelID'))[0].text
+                self.element_query('eventType'))[0].text]
+            self.estate = tree.findall(
+                self.element_query('eventState'))[0].text
+            self.echid = tree.findall(
+                self.element_query('channelID'))[0].text
             self.ecount = tree.findall(
-                element_query('activePostCount'))[0].text
+                self.element_query('activePostCount'))[0].text
         except (AttributeError, KeyError, IndexError) as err:
             _LOGGING.error('Problem finding attribute: %s', err)
             return
