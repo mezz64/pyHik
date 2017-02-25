@@ -102,8 +102,7 @@ class HikCamera(object):
         self.thrd.daemon = False
 
         # Callbacks
-        self._eventCallback = self._default_callback
-        self._dataCallback = self._default_callback
+        self._updateCallbacks = []
 
         self.initialize()
 
@@ -122,29 +121,19 @@ class HikCamera(object):
         """Return Event states dictionary"""
         return self.event_states
 
-    @property
-    def event_callback(self):
-        """ Callback for event updates. """
-        return self._eventCallback
+    def add_update_callback(self, callback, sensor):
+        """Register as callback for when a matching device sensor changes."""
+        self._updateCallbacks.append([callback, sensor])
+        _LOGGING.debug('Added update callback to %s on %s', callback, sensor)
 
-    @event_callback.setter
-    def event_callback(self, value):
-        """ Setter for event update callback. """
-        self._eventCallback = value
-
-    @property
-    def data_callback(self):
-        """ Callback for event updates. """
-        return self._dataCallback
-
-    @data_callback.setter
-    def data_callback(self, value):
-        """ Setter for event update callback. """
-        self._dataCallback = value
-
-    def _default_callback(self, data):
-        """Default callback that occurs when the client doesn't subscribe."""
-        _LOGGING.debug('Callback has not been set by client: %s', data)
+    def _do_update_callback(self, msg):
+        """Call registered callback functions."""
+        for callback, sensor in self._updateCallbacks:
+            if sensor == msg:
+                _LOGGING.debug('Update callback %s for sensor %s',
+                               callback, sensor)
+                callback(msg)
+                # self._loop.call_soon(callback, msg)
 
     def element_query(self, element):
         """Build tree query for a given element."""
@@ -403,5 +392,4 @@ class HikCamera(object):
         if dispatcher:
             dispatcher.send(signal=signal, sender=self.etype)
 
-        self.event_callback('{} - {}'.format(signal, self.etype))
-        self.data_callback(self.event_states)
+        self._do_update_callback('{}.{}'.format(self.cam_id, self.etype))

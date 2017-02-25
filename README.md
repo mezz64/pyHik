@@ -24,18 +24,18 @@ camera = pyhik.hikvision.HikCamera('http://X.X.X.X', port=80, user='admin', pass
 
 # Available Methods
 
-* Callbacks
-event_callback - provides camera id and event type that changed.
-data_callback - provides the event_state list on an event change.
+### Callbacks
+* add_update_callback(callback, msg) - used to register an update callback function.
+** msg should take the form: cam_id.event_type
 
-* Properties
-get_id - returns unique camera id
-get_name - returns camera name
-current_event_states - returns the event state list
+### Properties
+* get_id - returns unique camera id
+* get_name - returns camera name
+* current_event_states - returns the event state list
 
-* Functions
-start_stream - initialzes the event stream processing thread
-disconnect - closes the http stream session and stops the processing thread
+### Functions
+* start_stream - initialzes the event stream processing thread
+* disconnect - closes the http stream session and stops the processing thread
 
 # TODO
 
