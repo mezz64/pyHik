@@ -45,6 +45,8 @@ coverage.xml
 
 # Local tests
 test.py
+test_hass.py
+test_simple.py
 test.txt
 api_out.log
 

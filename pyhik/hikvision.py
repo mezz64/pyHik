@@ -2,7 +2,7 @@
 pyhik.hikvision
 ~~~~~~~~~~~~~~~~~~~~
 Provides api for Hikvision events
-Copyright (c) 2016 John Mihalic <https://github.com/mezz64>
+Copyright (c) 2017 John Mihalic <https://github.com/mezz64>
 Licensed under the MIT license.
 
 Based on the following api documentation:
@@ -21,9 +21,16 @@ except ImportError:
     import xml.etree.ElementTree as ET
 
 import threading
-from pydispatch import dispatcher
 import requests
 
+# Make pydispatcher optional to support legacy implentations
+# New usage should implement the event_callback
+try:
+    from pydispatch import dispatcher
+except ImportError:
+    dispatcher = None
+
+from pyhik.watchdog import Watchdog
 from pyhik.constants import (
     DEFAULT_PORT, DEFAULT_HEADERS, XML_NAMESPACE, SENSOR_MAP)
 
@@ -44,6 +51,7 @@ http://X.X.X.X/ISAPI/System/Video/inputs/channels/1/motionDetection
 IR switch URL:
 http://X.X.X.X/ISAPI/Image/channels/1/ircutFilter
 report IR status and allow
+
 """
 
 
@@ -58,6 +66,8 @@ class HikCamera(object):
         _LOGGING.debug("Initializing new hikvision device at: %s", host)
 
         self.event_states = {}
+
+        self.watchdog = Watchdog(6.0, self.watchdog_handler)
 
         self.namespace = XML_NAMESPACE
 
@@ -86,9 +96,14 @@ class HikCamera(object):
 
         # Define event stream processing thread
         self.kill_thrd = threading.Event()
+        self.reset_thrd = threading.Event()
         self.thrd = threading.Thread(
-            target=self.alert_stream, args=(self.kill_thrd,))
+            target=self.alert_stream, args=(self.reset_thrd, self.kill_thrd,))
         self.thrd.daemon = False
+
+        # Callbacks
+        self._eventCallback = self._default_callback
+        self._dataCallback = self._default_callback
 
         self.initialize()
 
@@ -106,6 +121,30 @@ class HikCamera(object):
     def current_event_states(self):
         """Return Event states dictionary"""
         return self.event_states
+
+    @property
+    def event_callback(self):
+        """ Callback for event updates. """
+        return self._eventCallback
+
+    @event_callback.setter
+    def event_callback(self, value):
+        """ Setter for event update callback. """
+        self._eventCallback = value
+
+    @property
+    def data_callback(self):
+        """ Callback for event updates. """
+        return self._dataCallback
+
+    @data_callback.setter
+    def data_callback(self, value):
+        """ Setter for event update callback. """
+        self._dataCallback = value
+
+    def _default_callback(self, data):
+        """Default callback that occurs when the client doesn't subscribe."""
+        _LOGGING.debug('Callback has not been set by client: %s', data)
 
     def element_query(self, element):
         """Build tree query for a given element."""
@@ -209,13 +248,18 @@ class HikCamera(object):
                 tag = item.tag.split('}')[1]
                 device_info[tag] = item.text
 
-            # print(device_info)
             return device_info
 
         except AttributeError as err:
             _LOGGING.error('Entire response: %s', response.text)
             _LOGGING.error('There was a problem: %s', err)
             return None
+
+    def watchdog_handler(self):
+        """ Take care of threads if wachdog expires. """
+        _LOGGING.debug('%s Watchdog expired. Resetting connection.', self.name)
+        self.watchdog.stop()
+        self.reset_thrd.set()
 
     def disconnect(self):
         """Disconnect from event stream."""
@@ -227,27 +271,35 @@ class HikCamera(object):
 
     def start_stream(self):
         """Start thread to process event stream."""
+        # self.watchdog.start()
         self.thrd.start()
 
-    def alert_stream(self, kill_event):
+    def alert_stream(self, reset_event, kill_event):
         """Open event stream."""
         _LOGGING.debug('Stream Thread Started: %s, %s', self.name, self.cam_id)
         start_event = False
         parse_string = ""
-
-        # Need to see if we have any events available
-        # before we start the stream
+        fail_count = 0
 
         url = '%s/ISAPI/Event/notification/alertStream' % self.root_url
 
         # pylint: disable=too-many-nested-blocks
         while True:
+
             try:
                 stream = self.hik_request.get(url, stream=True)
+
+                if stream.status_code != 200:
+                    raise ValueError('Connection unsucessful.')
+                else:
+                    _LOGGING.debug('%s Connection Successful.', self.name)
+                    fail_count = 0
+                    self.watchdog.start()
+
                 for line in stream.iter_lines():
                     # _LOGGING.debug('Processing line from %s', self.name)
                     # filter out keep-alive new lines
-                    if line:  # and not kill_event.wait(1):
+                    if line:
                         str_line = line.decode("utf-8")
                         # New events start with --boundry
                         if str_line.find('Content-Length') != -1:
@@ -268,15 +320,32 @@ class HikCamera(object):
 
                     if kill_event.is_set():
                         # We were asked to stop the thread so lets do so.
-                        _LOGGING.debug('Stopping event stream thread for %s',
-                                       self.name)
-                        self.hik_request.close()
-                        return
+                        break
+                    elif reset_event.is_set():
+                        # We need to reset the connection.
+                        break
 
-            except (ValueError, requests.exceptions.ChunkedEncodingError):
-                _LOGGING.info('%s Connection Lost. Waiting 5s.', self.name)
+                if kill_event.is_set():
+                    # We were asked to stop the thread so lets do so.
+                    _LOGGING.debug('Stopping event stream thread for %s',
+                                   self.name)
+                    self.hik_request.close()
+                    return
+                elif reset_event.is_set():
+                    # We need to reset the connection.
+                    self.reset_thrd.clear()
+                    raise ValueError('Watchdog failed, resetting connection.')
+
+            except (ValueError,
+                    requests.exceptions.ChunkedEncodingError) as err:
+                fail_count += 1
+                _LOGGING.info('%s Connection Failed. Waiting %ss. Error: %s',
+                              self.name, (fail_count * 5) + 5, err)
+                self.watchdog.stop()
+                self.hik_request.close()
                 time.sleep(5)
                 self.update_stale()
+                time.sleep(fail_count * 5)
                 continue
 
     def process_stream(self, tree):
@@ -293,6 +362,11 @@ class HikCamera(object):
         except (AttributeError, KeyError, IndexError) as err:
             _LOGGING.error('Problem finding attribute: %s', err)
             return
+
+        # Take care of keep-alive
+        if len(self.etype) > 0 and self.etype == 'Video Loss':
+            self.watchdog.pet()
+
         # Track state if it's in the event list.
         if len(self.etype) > 0 and self.etype in self.event_states:
             # Determine if state has changed
@@ -304,6 +378,7 @@ class HikCamera(object):
                 datetime.datetime.now()]
             if self.estate != old_state:
                 self.publish_changes()
+            self.watchdog.pet()
 
     def update_stale(self):
         """Update stale active statuses"""
@@ -324,4 +399,9 @@ class HikCamera(object):
         _LOGGING.debug('%s Update: %s, %s',
                        self.name, self.etype, self.event_states[self.etype])
         signal = 'ValueChanged.{}'.format(self.cam_id)
-        dispatcher.send(signal=signal, sender=self.etype)
+
+        if dispatcher:
+            dispatcher.send(signal=signal, sender=self.etype)
+
+        self.event_callback('{} - {}'.format(signal, self.etype))
+        self.data_callback(self.event_states)
