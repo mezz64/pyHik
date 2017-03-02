@@ -318,6 +318,7 @@ class HikCamera(object):
                     # We were asked to stop the thread so lets do so.
                     _LOGGING.debug('Stopping event stream thread for %s',
                                    self.name)
+                    self.watchdog.stop()
                     self.hik_request.close()
                     return
                 elif reset_event.is_set():
