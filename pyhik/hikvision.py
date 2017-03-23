@@ -67,7 +67,7 @@ class HikCamera(object):
 
         self.event_states = {}
 
-        self.watchdog = Watchdog(6.0, self.watchdog_handler)
+        self.watchdog = Watchdog(15.0, self.watchdog_handler)
 
         self.namespace = XML_NAMESPACE
 
@@ -157,23 +157,29 @@ class HikCamera(object):
 
         events_available = self.get_event_triggers()
         if events_available:
-            for event in events_available:
-                try:
-                    self.event_states[SENSOR_MAP[event]] = [
-                        False, 1, 0, datetime.datetime.now()]
-                except KeyError:
-                    # Sensor type doesn't have a known friendly name
-                    # We can't reliably handle it at this time...
-                    _LOGGING.warning(
-                        'Sensor type "%s" is currently unsupported.', event)
+            for event, channel_list in events_available.items():
+                for channel in channel_list:
+                    try:
+                        self.event_states.setdefault(
+                            SENSOR_MAP[event], []).append(
+                                [False, channel, 0, datetime.datetime.now()])
+                    except KeyError:
+                        # Sensor type doesn't have a known friendly name
+                        # We can't reliably handle it at this time...
+                        _LOGGING.warning(
+                            'Sensor type "%s" is unsupported.', event)
 
             _LOGGING.debug('Initialized Dictionary: %s', self.event_states)
         else:
             _LOGGING.debug('No Events available in dictionary.')
 
     def get_event_triggers(self):
-        """Returns list of supported events."""
-        events = []
+        """
+        Returns dict of supported events.
+        Key = Event Type
+        List = Channels that have that event activated
+        """
+        events = {}
 
         url = '%s/ISAPI/Event/triggers' % self.root_url
 
@@ -188,11 +194,25 @@ class HikCamera(object):
         try:
             content = ET.fromstring(response.text)
 
-            for eventtrigger in content[0].findall(
-                    self.element_query('EventTrigger')):
+            if content[0].find(self.element_query('EventTrigger')):
+                _LOGGING.debug('Processing Camera Device.')
+                event_xml = content[0].findall(
+                    self.element_query('EventTrigger'))
+            elif content.find(self.element_query('EventTrigger')):
+                _LOGGING.debug('Processing NVR Device.')
+                event_xml = content.findall(
+                    self.element_query('EventTrigger'))
+
+            for eventtrigger in event_xml:
                 ettype = eventtrigger.find(self.element_query('eventType'))
                 etnotify = eventtrigger.find(
                     self.element_query('EventTriggerNotificationList'))
+                etchannel = eventtrigger.find(
+                    self.element_query('dynVideoInputChannelID'))
+                if etchannel is None:
+                    # Try alternate channel field
+                    etchannel = eventtrigger.find(
+                        self.element_query('videoInputChannelID'))
 
                 for notifytrigger in etnotify:
                     ntype = notifytrigger.find(
@@ -202,7 +222,13 @@ class HikCamera(object):
                         If we got this far we found an event that we want to
                         track.
                         """
-                        events.append(ettype.text)
+                        # Old event list
+                        # events.append(ettype.text)
+                        if etchannel is not None:
+                            events.setdefault(
+                                ettype.text, []).append(int(etchannel.text))
+                        else:
+                            events.setdefault(ettype.text, []).append(0)
 
         except (AttributeError, ET.ParseError) as err:
             _LOGGING.error(
@@ -341,33 +367,39 @@ class HikCamera(object):
     def process_stream(self, tree):
         """Process incoming event stream packets."""
         try:
-            self.etype = SENSOR_MAP[tree.findall(
-                self.element_query('eventType'))[0].text]
-            self.estate = tree.findall(
-                self.element_query('eventState'))[0].text
-            self.echid = tree.findall(
-                self.element_query('channelID'))[0].text
-            self.ecount = tree.findall(
-                self.element_query('activePostCount'))[0].text
+            etype = SENSOR_MAP[tree.find(
+                self.element_query('eventType')).text]
+            estate = tree.find(
+                self.element_query('eventState')).text
+            echid = tree.find(
+                self.element_query('channelID'))
+            if echid is None:
+                # Some devices use a different key
+                echid = tree.find(
+                    self.element_query('dynChannelID'))
+            echid = int(echid.text)
+            ecount = tree.find(
+                self.element_query('activePostCount')).text
         except (AttributeError, KeyError, IndexError) as err:
             _LOGGING.error('Problem finding attribute: %s', err)
             return
 
         # Take care of keep-alive
-        if len(self.etype) > 0 and self.etype == 'Video Loss':
+        if len(etype) > 0 and etype == 'Video Loss':
             self.watchdog.pet()
 
         # Track state if it's in the event list.
-        if len(self.etype) > 0 and self.etype in self.event_states:
+        if len(etype) > 0 and etype in self.event_states:
             # Determine if state has changed
-            # If so, update, otherwise do nothing
-            self.estate = (self.estate == 'active')
-            old_state = self.event_states[self.etype][0]
-            self.event_states[self.etype] = [
-                self.estate, int(self.echid), int(self.ecount),
-                datetime.datetime.now()]
-            if self.estate != old_state:
-                self.publish_changes()
+            # If so, publish, otherwise do nothing
+            estate = (estate == 'active')
+            old_state = self.fetch_attributes(etype, echid)[0]
+            attr = [estate, echid, int(ecount),
+                    datetime.datetime.now()]
+            self.update_attributes(etype, echid, attr)
+
+            if estate != old_state:
+                self.publish_changes(etype, echid)
             self.watchdog.pet()
 
     def update_stale(self):
@@ -375,22 +407,48 @@ class HikCamera(object):
         # Some events don't post an inactive XML, only active.
         # If we don't get an active update for 5 seconds we can
         # assume the event is no longer active and update accordingly.
-        for self.etype, eprop in self.event_states.items():
-            if eprop[3] is not None:
-                sec_elap = ((datetime.datetime.now()-eprop[3]).total_seconds())
-                # print('Seconds since last update: {}'.format(sec_elap))
-                if sec_elap > 5 and eprop[0] is True:
-                    self.event_states[self.etype] = [
-                        False, eprop[1], eprop[2], datetime.datetime.now()]
-                    self.publish_changes()
+        for etype, echannels in self.event_states.items():
+            for eprop in echannels:
+                if eprop[3] is not None:
+                    sec_elap = ((datetime.datetime.now()-eprop[3])
+                                .total_seconds())
+                    # print('Seconds since last update: {}'.format(sec_elap))
+                    if sec_elap > 5 and eprop[0] is True:
+                        _LOGGING.debug('Updating stale event %s on CH(%s)',
+                                       etype, eprop[1])
+                        attr = [False, eprop[1], eprop[2],
+                                datetime.datetime.now()]
+                        self.update_attributes(etype, eprop[1], attr)
+                        self.publish_changes(etype, eprop[1])
 
-    def publish_changes(self):
+    def publish_changes(self, etype, echid):
         """Post updates for specified alarm type."""
         _LOGGING.debug('%s Update: %s, %s',
-                       self.name, self.etype, self.event_states[self.etype])
+                       self.name, etype, self.fetch_attributes(etype, echid))
         signal = 'ValueChanged.{}'.format(self.cam_id)
 
         if dispatcher:
             dispatcher.send(signal=signal, sender=self.etype)
 
-        self._do_update_callback('{}.{}'.format(self.cam_id, self.etype))
+        self._do_update_callback('{}.{}.{}'.format(self.cam_id, etype, echid))
+
+    def fetch_attributes(self, event, channel):
+        """Returns attribute list for a given event/channel."""
+        try:
+            for sensor in self.event_states[event]:
+                if sensor[1] == int(channel):
+                    return sensor
+        except KeyError:
+            _LOGGING.debug('Error fetching attributes for: (%s, %s)',
+                           event, channel)
+            return None
+
+    def update_attributes(self, event, channel, attr):
+        """Update attribute list for current event/channel."""
+        try:
+            for i, sensor in enumerate(self.event_states[event]):
+                if sensor[1] == int(channel):
+                    self.event_states[event][i] = attr
+        except KeyError:
+            _LOGGING.debug('Error updating attributes for: (%s, %s)',
+                           event, channel)
