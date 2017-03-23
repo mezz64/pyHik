@@ -2,7 +2,7 @@
 pyhik.hikvision
 ~~~~~~~~~~~~~~~~~~~~
 Provides api for Hikvision events
-Copyright (c) 2017 John Mihalic <https://github.com/mezz64>
+Copyright (c) 2016-2017 John Mihalic <https://github.com/mezz64>
 Licensed under the MIT license.
 
 Based on the following api documentation:
@@ -83,11 +83,6 @@ class HikCamera(object):
 
         self.root_url = '{}:{}'.format(host, port)
 
-        self.etype = ''
-        self.estate = False
-        self.echid = 0
-        self.ecount = 0
-
         # Build requests session for main thread calls
         self.hik_request = requests.Session()
         self.hik_request.auth = (usr, pwd)
@@ -133,7 +128,6 @@ class HikCamera(object):
                 _LOGGING.debug('Update callback %s for sensor %s',
                                callback, sensor)
                 callback(msg)
-                # self._loop.call_soon(callback, msg)
 
     def element_query(self, element):
         """Build tree query for a given element."""
@@ -222,8 +216,6 @@ class HikCamera(object):
                         If we got this far we found an event that we want to
                         track.
                         """
-                        # Old event list
-                        # events.append(ettype.text)
                         if etchannel is not None:
                             events.setdefault(
                                 ettype.text, []).append(int(etchannel.text))
@@ -355,8 +347,8 @@ class HikCamera(object):
             except (ValueError,
                     requests.exceptions.ChunkedEncodingError) as err:
                 fail_count += 1
-                _LOGGING.info('%s Connection Failed. Waiting %ss. Error: %s',
-                              self.name, (fail_count * 5) + 5, err)
+                _LOGGING.warning('%s Connection Failed. Waiting %ss. Err: %s',
+                                 self.name, (fail_count * 5) + 5, err)
                 self.watchdog.stop()
                 self.hik_request.close()
                 time.sleep(5)
@@ -405,7 +397,7 @@ class HikCamera(object):
     def update_stale(self):
         """Update stale active statuses"""
         # Some events don't post an inactive XML, only active.
-        # If we don't get an active update for 5 seconds we can
+        # If we don't get an active update for mv 5 seconds we can
         # assume the event is no longer active and update accordingly.
         for etype, echannels in self.event_states.items():
             for eprop in echannels:
@@ -426,9 +418,9 @@ class HikCamera(object):
         _LOGGING.debug('%s Update: %s, %s',
                        self.name, etype, self.fetch_attributes(etype, echid))
         signal = 'ValueChanged.{}'.format(self.cam_id)
-
+        sender = '{}.{}'.format(etype, echid)
         if dispatcher:
-            dispatcher.send(signal=signal, sender=self.etype)
+            dispatcher.send(signal=signal, sender=sender)
 
         self._do_update_callback('{}.{}.{}'.format(self.cam_id, etype, echid))
 
