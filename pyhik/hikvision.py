@@ -32,7 +32,8 @@ except ImportError:
 
 from pyhik.watchdog import Watchdog
 from pyhik.constants import (
-    DEFAULT_PORT, DEFAULT_HEADERS, XML_NAMESPACE, SENSOR_MAP)
+    DEFAULT_PORT, DEFAULT_HEADERS, XML_NAMESPACE, SENSOR_MAP,
+    CAM_DEVICE, NVR_DEVICE)
 
 _LOGGING = logging.getLogger(__name__)
 
@@ -80,6 +81,7 @@ class HikCamera(object):
         self.pwd = pwd
         self.cam_id = 0  # uuid.uuid4().hex
         self.name = ''
+        self.device_type = None
 
         self.root_url = '{}:{}'.format(host, port)
 
@@ -103,13 +105,18 @@ class HikCamera(object):
 
     @property
     def get_id(self):
-        """Returns unique camera identifier."""
+        """Returns unique camera/nvr identifier."""
         return self.cam_id
 
     @property
     def get_name(self):
-        """Return camera name."""
+        """Return camera/nvr name."""
         return self.name
+
+    @property
+    def get_type(self):
+        """Return device type."""
+        return self.device_type
 
     @property
     def current_event_states(self):
@@ -190,10 +197,12 @@ class HikCamera(object):
 
             if content[0].find(self.element_query('EventTrigger')):
                 _LOGGING.debug('Processing Camera Device.')
+                self.device_type = CAM_DEVICE
                 event_xml = content[0].findall(
                     self.element_query('EventTrigger'))
             elif content.find(self.element_query('EventTrigger')):
                 _LOGGING.debug('Processing NVR Device.')
+                self.device_type = NVR_DEVICE
                 event_xml = content.findall(
                     self.element_query('EventTrigger'))
 

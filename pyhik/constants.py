@@ -33,3 +33,6 @@ SENSOR_MAP = {
     'facedetection': 'Face Detection',
     'scenechangedetection': 'Scene Change Detection',
 }
+
+CAM_DEVICE = 'CAM'
+NVR_DEVICE = 'NVR'
