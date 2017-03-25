@@ -397,7 +397,7 @@ class HikCamera(object):
     def update_stale(self):
         """Update stale active statuses"""
         # Some events don't post an inactive XML, only active.
-        # If we don't get an active update for mv 5 seconds we can
+        # If we don't get an active update for 5 seconds we can
         # assume the event is no longer active and update accordingly.
         for etype, echannels in self.event_states.items():
             for eprop in echannels:
