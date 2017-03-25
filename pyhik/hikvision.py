@@ -390,18 +390,20 @@ class HikCamera(object):
             self.watchdog.pet()
 
         # Track state if it's in the event list.
-        if len(etype) > 0 and etype in self.event_states:
-            # Determine if state has changed
-            # If so, publish, otherwise do nothing
-            estate = (estate == 'active')
-            old_state = self.fetch_attributes(etype, echid)[0]
-            attr = [estate, echid, int(ecount),
-                    datetime.datetime.now()]
-            self.update_attributes(etype, echid, attr)
+        if len(etype) > 0:
+            state = self.fetch_attributes(etype, echid)
+            if state:
+                # Determine if state has changed
+                # If so, publish, otherwise do nothing
+                estate = (estate == 'active')
+                old_state = state[0]
+                attr = [estate, echid, int(ecount),
+                        datetime.datetime.now()]
+                self.update_attributes(etype, echid, attr)
 
-            if estate != old_state:
-                self.publish_changes(etype, echid)
-            self.watchdog.pet()
+                if estate != old_state:
+                    self.publish_changes(etype, echid)
+                self.watchdog.pet()
 
     def update_stale(self):
         """Update stale active statuses"""
