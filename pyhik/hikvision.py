@@ -79,7 +79,7 @@ class HikCamera(object):
         self.host = host
         self.usr = usr
         self.pwd = pwd
-        self.cam_id = 0  # uuid.uuid4().hex
+        self.cam_id = 0
         self.name = ''
         self.device_type = None
 
@@ -241,7 +241,7 @@ class HikCamera(object):
         return events
 
     def get_device_info(self):
-        """Parse deviceInfo into dictionary"""
+        """Parse deviceInfo into dictionary."""
         device_info = {}
         url = '%s/ISAPI/System/deviceInfo' % self.root_url
 
@@ -272,7 +272,7 @@ class HikCamera(object):
             return None
 
     def watchdog_handler(self):
-        """ Take care of threads if wachdog expires. """
+        """Take care of threads if wachdog expires."""
         _LOGGING.debug('%s Watchdog expired. Resetting connection.', self.name)
         self.watchdog.stop()
         self.reset_thrd.set()
@@ -425,7 +425,7 @@ class HikCamera(object):
                         self.publish_changes(etype, eprop[1])
 
     def publish_changes(self, etype, echid):
-        """Post updates for specified alarm type."""
+        """Post updates for specified event type."""
         _LOGGING.debug('%s Update: %s, %s',
                        self.name, etype, self.fetch_attributes(etype, echid))
         signal = 'ValueChanged.{}'.format(self.cam_id)
@@ -442,8 +442,6 @@ class HikCamera(object):
                 if sensor[1] == int(channel):
                     return sensor
         except KeyError:
-            _LOGGING.debug('Error fetching attributes for: (%s, %s)',
-                           event, channel)
             return None
 
     def update_attributes(self, event, channel, attr):
