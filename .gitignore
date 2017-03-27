@@ -44,6 +44,7 @@ coverage.xml
 *,cover
 
 # Local tests
+testing/
 test.py
 test_hass.py
 test_simple.py

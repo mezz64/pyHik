@@ -1,6 +1,6 @@
 # Introduction
 
-This is a python module aiming to expose common API events from a Hikvision IP camera.
+This is a python module aiming to expose common API events from a Hikvision IP camera or nvr.
 
 Code is licensed under the MIT license.
 
@@ -26,12 +26,12 @@ camera = pyhik.hikvision.HikCamera('http://X.X.X.X', port=80, user='admin', pass
 
 ### Callbacks
 * add_update_callback(callback, msg) - used to register an update callback function.
-** msg should take the form: cam_id.event_type
+** msg should take the form: cam_id.event_type.channel
 
 ### Properties
-* get_id - returns unique camera id
-* get_name - returns camera name
-* current_event_states - returns the event state list
+* get_id - returns unique camera/nvr id
+* get_name - returns camera/nvr name
+* current_event_states - returns the event state dictionary
 
 ### Functions
 * start_stream - initialzes the event stream processing thread

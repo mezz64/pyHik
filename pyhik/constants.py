@@ -2,7 +2,7 @@
 pyhik.constants
 ~~~~~~~~~~~~~~~~~~~~
 Constants list
-Copyright (c) 2016 John Mihalic <https://github.com/mezz64>
+Copyright (c) 2016-2017 John Mihalic <https://github.com/mezz64>
 Licensed under the MIT license.
 """
 
@@ -17,7 +17,6 @@ DEFAULT_HEADERS = {
 
 SENSOR_MAP = {
     'VMD': 'Motion',
-    'IO': 'IO Trigger',
     'linedetection': 'Line Crossing',
     'fielddetection': 'Field Detection',
     'videoloss': 'Video Loss',
@@ -32,4 +31,8 @@ SENSOR_MAP = {
     'badvideo': 'Bad Video',
     'PIR': 'PIR Alarm',
     'facedetection': 'Face Detection',
+    'scenechangedetection': 'Scene Change Detection',
 }
+
+CAM_DEVICE = 'CAM'
+NVR_DEVICE = 'NVR'
