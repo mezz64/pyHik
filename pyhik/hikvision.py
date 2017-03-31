@@ -181,28 +181,33 @@ class HikCamera(object):
         List = Channels that have that event activated
         """
         events = {}
+        nvrflag = False
 
         url = '%s/ISAPI/Event/triggers' % self.root_url
 
         try:
             response = self.hik_request.get(url)
+            if response.status_code == 404:
+                # Try alternate URL for triggers
+                url = '%s/Event/triggers' % self.root_url
+                response = self.hik_request.get(url)
+
         except requests.exceptions.RequestException as err:
             _LOGGING.error('Unable to fetch events, error: %s', err)
             return None
 
-        # Response of 200 means OK
+        if response.status_code != 200:
+            # If we didn't recieve 200, abort
+            return None
 
         try:
             content = ET.fromstring(response.text)
 
             if content[0].find(self.element_query('EventTrigger')):
-                _LOGGING.debug('Processing Camera Device.')
-                self.device_type = CAM_DEVICE
                 event_xml = content[0].findall(
                     self.element_query('EventTrigger'))
             elif content.find(self.element_query('EventTrigger')):
-                _LOGGING.debug('Processing NVR Device.')
-                self.device_type = NVR_DEVICE
+                # This is either an NVR or a rebadged camera
                 event_xml = content.findall(
                     self.element_query('EventTrigger'))
 
@@ -216,11 +221,20 @@ class HikCamera(object):
                     # Try alternate channel field
                     etchannel = eventtrigger.find(
                         self.element_query('videoInputChannelID'))
+                if etchannel is None:
+                    # Try 2nd alternate channel field
+                    etchannel = eventtrigger.find(
+                        self.element_query('id'))
+
+                if etchannel:
+                    if int(etchannel.text) > 1:
+                        # Must be an nvr
+                        nvrflag = True
 
                 for notifytrigger in etnotify:
                     ntype = notifytrigger.find(
                         self.element_query('notificationMethod'))
-                    if ntype.text == 'center':
+                    if ntype.text == 'center' or ntype.text == 'HTTP':
                         """
                         If we got this far we found an event that we want to
                         track.
@@ -235,6 +249,12 @@ class HikCamera(object):
             _LOGGING.error(
                 'There was a problem finding an element: %s', err)
             return None
+
+        if nvrflag:
+            self.device_type = NVR_DEVICE
+        else:
+            self.device_type = CAM_DEVICE
+        _LOGGING.debug('Processed %s Device.', self.device_type)
 
         _LOGGING.debug('Found events: %s', events)
         self.hik_request.close()
