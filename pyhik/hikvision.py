@@ -267,11 +267,18 @@ class HikCamera(object):
 
         try:
             response = self.hik_request.get(url)
+            if response.status_code == 404:
+                # Try alternate URL for deviceInfo
+                url = '%s/System/deviceInfo' % self.root_url
+                response = self.hik_request.get(url)
+
         except requests.exceptions.RequestException as err:
             _LOGGING.error('Unable to fetch deviceInfo, error: %s', err)
             return None
 
-        # Response of 200 means OK
+        if response.status_code != 200:
+            # If we didn't recieve 200, abort
+            return None
 
         try:
             tree = ET.fromstring(response.text)
@@ -324,6 +331,10 @@ class HikCamera(object):
 
             try:
                 stream = self.hik_request.get(url, stream=True)
+                if stream.status_code == 404:
+                    # Try alternate URL for stream
+                    url = '%s/Event/notification/alertStream' % self.root_url
+                    stream = self.hik_request.get(url, stream=True)
 
                 if stream.status_code != 200:
                     raise ValueError('Connection unsucessful.')
