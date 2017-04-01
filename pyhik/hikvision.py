@@ -269,6 +269,7 @@ class HikCamera(object):
             response = self.hik_request.get(url)
             if response.status_code == 404:
                 # Try alternate URL for deviceInfo
+                _LOGGING.debug('Using alternate deviceInfo URL.')
                 url = '%s/System/deviceInfo' % self.root_url
                 response = self.hik_request.get(url)
 
@@ -278,12 +279,14 @@ class HikCamera(object):
 
         if response.status_code != 200:
             # If we didn't recieve 200, abort
+            _LOGGING.debug('Unable to fetch device info.')
             return None
 
         try:
             tree = ET.fromstring(response.text)
             # Try to fetch namespace from XML
             nmsp = tree.tag.split('}')[0].strip('{')
+            _LOGGING.debug('Auto Namespace Result: %s', nmsp)
             self.namespace = nmsp if nmsp.startswith('http') else XML_NAMESPACE
             _LOGGING.debug('Using Namespace: %s', self.namespace)
 
