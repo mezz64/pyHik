@@ -189,6 +189,7 @@ class HikCamera(object):
             response = self.hik_request.get(url)
             if response.status_code == 404:
                 # Try alternate URL for triggers
+                _LOGGING.debug('Using alternate triggers URL.')
                 url = '%s/Event/triggers' % self.root_url
                 response = self.hik_request.get(url)
 
@@ -230,20 +231,20 @@ class HikCamera(object):
                     if int(etchannel.text) > 1:
                         # Must be an nvr
                         nvrflag = True
-
-                for notifytrigger in etnotify:
-                    ntype = notifytrigger.find(
-                        self.element_query('notificationMethod'))
-                    if ntype.text == 'center' or ntype.text == 'HTTP':
-                        """
-                        If we got this far we found an event that we want to
-                        track.
-                        """
-                        if etchannel is not None:
-                            events.setdefault(
-                                ettype.text, []).append(int(etchannel.text))
-                        else:
-                            events.setdefault(ettype.text, []).append(0)
+                if etnotify:
+                    for notifytrigger in etnotify:
+                        ntype = notifytrigger.find(
+                            self.element_query('notificationMethod'))
+                        if ntype.text == 'center' or ntype.text == 'HTTP':
+                            """
+                            If we got this far we found an event that we want
+                            to track.
+                            """
+                            if etchannel is not None:
+                                events.setdefault(
+                                    ettype.text, []).append(int(etchannel.text))
+                            else:
+                                events.setdefault(ettype.text, []).append(0)
 
         except (AttributeError, ET.ParseError) as err:
             _LOGGING.error(
