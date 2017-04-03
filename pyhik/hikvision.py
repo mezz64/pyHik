@@ -228,13 +228,20 @@ class HikCamera(object):
                         self.element_query('videoInputChannelID'))
                 if etchannel is None:
                     # Try 2nd alternate channel field
-                    etchannel = eventtrigger.find(
-                        self.element_query('id'))
+                    try:
+                        etchannel = eventtrigger.find(
+                            self.element_query('id'))
+                        # Need to make sure this is actually a number
+                        int(etchannel.text)
+                    except ValueError:
+                        # Field must not be an integer
+                        etchannel = None
 
-                if etchannel:
+                if etchannel is not None:
                     if int(etchannel.text) > 1:
                         # Must be an nvr
                         nvrflag = True
+
                 if etnotify:
                     for notifytrigger in etnotify:
                         ntype = notifytrigger.find(
@@ -245,8 +252,8 @@ class HikCamera(object):
                             to track.
                             """
                             if etchannel is not None:
-                                events.setdefault(
-                                    ettype.text, []).append(int(etchannel.text))
+                                events.setdefault(ettype.text, []) \
+                                    .append(int(etchannel.text))
                             else:
                                 events.setdefault(ettype.text, []).append(0)
 
@@ -259,7 +266,8 @@ class HikCamera(object):
             self.device_type = NVR_DEVICE
         else:
             self.device_type = CAM_DEVICE
-        _LOGGING.debug('Processed %s Device.', self.device_type)
+        _LOGGING.debug('Processed %s as %s Device.',
+                       self.cam_id, self.device_type)
 
         _LOGGING.debug('Found events: %s', events)
         self.hik_request.close()
@@ -291,7 +299,6 @@ class HikCamera(object):
             tree = ET.fromstring(response.text)
             # Try to fetch namespace from XML
             nmsp = tree.tag.split('}')[0].strip('{')
-            _LOGGING.debug('Auto Namespace Result: %s', nmsp)
             self.namespace = nmsp if nmsp.startswith('http') else XML_NAMESPACE
             _LOGGING.debug('Using Namespace: %s', self.namespace)
 
