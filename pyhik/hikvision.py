@@ -14,6 +14,7 @@ http://oversea-download.hikvision.com/uploadfile/Leaflet/ISAPI/HIKVISION%20ISAPI
 import time
 import datetime
 import logging
+import uuid
 
 try:
     import xml.etree.cElementTree as ET
@@ -154,7 +155,10 @@ class HikCamera(object):
             if key == 'deviceName':
                 self.name = device_info[key]
             elif key == 'deviceID':
-                self.cam_id = device_info[key]
+                if len(device_info[key]) > 10:
+                    self.cam_id = device_info[key]
+                else:
+                    self.cam_id = uuid.uuid4()
 
         events_available = self.get_event_triggers()
         if events_available:
