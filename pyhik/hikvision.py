@@ -14,6 +14,7 @@ http://oversea-download.hikvision.com/uploadfile/Leaflet/ISAPI/HIKVISION%20ISAPI
 import time
 import datetime
 import logging
+import uuid
 
 try:
     import xml.etree.cElementTree as ET
@@ -154,7 +155,10 @@ class HikCamera(object):
             if key == 'deviceName':
                 self.name = device_info[key]
             elif key == 'deviceID':
-                self.cam_id = device_info[key]
+                if len(device_info[key]) > 10:
+                    self.cam_id = device_info[key]
+                else:
+                    self.cam_id = uuid.uuid4()
 
         events_available = self.get_event_triggers()
         if events_available:
@@ -181,28 +185,34 @@ class HikCamera(object):
         List = Channels that have that event activated
         """
         events = {}
+        nvrflag = False
 
         url = '%s/ISAPI/Event/triggers' % self.root_url
 
         try:
             response = self.hik_request.get(url)
+            if response.status_code == 404:
+                # Try alternate URL for triggers
+                _LOGGING.debug('Using alternate triggers URL.')
+                url = '%s/Event/triggers' % self.root_url
+                response = self.hik_request.get(url)
+
         except requests.exceptions.RequestException as err:
             _LOGGING.error('Unable to fetch events, error: %s', err)
             return None
 
-        # Response of 200 means OK
+        if response.status_code != 200:
+            # If we didn't recieve 200, abort
+            return None
 
         try:
             content = ET.fromstring(response.text)
 
             if content[0].find(self.element_query('EventTrigger')):
-                _LOGGING.debug('Processing Camera Device.')
-                self.device_type = CAM_DEVICE
                 event_xml = content[0].findall(
                     self.element_query('EventTrigger'))
             elif content.find(self.element_query('EventTrigger')):
-                _LOGGING.debug('Processing NVR Device.')
-                self.device_type = NVR_DEVICE
+                # This is either an NVR or a rebadged camera
                 event_xml = content.findall(
                     self.element_query('EventTrigger'))
 
@@ -216,25 +226,48 @@ class HikCamera(object):
                     # Try alternate channel field
                     etchannel = eventtrigger.find(
                         self.element_query('videoInputChannelID'))
+                if etchannel is None:
+                    # Try 2nd alternate channel field
+                    try:
+                        etchannel = eventtrigger.find(
+                            self.element_query('id'))
+                        # Need to make sure this is actually a number
+                        int(etchannel.text)
+                    except ValueError:
+                        # Field must not be an integer
+                        etchannel = None
 
-                for notifytrigger in etnotify:
-                    ntype = notifytrigger.find(
-                        self.element_query('notificationMethod'))
-                    if ntype.text == 'center':
-                        """
-                        If we got this far we found an event that we want to
-                        track.
-                        """
-                        if etchannel is not None:
-                            events.setdefault(
-                                ettype.text, []).append(int(etchannel.text))
-                        else:
-                            events.setdefault(ettype.text, []).append(0)
+                if etchannel is not None:
+                    if int(etchannel.text) > 1:
+                        # Must be an nvr
+                        nvrflag = True
+
+                if etnotify:
+                    for notifytrigger in etnotify:
+                        ntype = notifytrigger.find(
+                            self.element_query('notificationMethod'))
+                        if ntype.text == 'center' or ntype.text == 'HTTP':
+                            """
+                            If we got this far we found an event that we want
+                            to track.
+                            """
+                            if etchannel is not None:
+                                events.setdefault(ettype.text, []) \
+                                    .append(int(etchannel.text))
+                            else:
+                                events.setdefault(ettype.text, []).append(0)
 
         except (AttributeError, ET.ParseError) as err:
             _LOGGING.error(
                 'There was a problem finding an element: %s', err)
             return None
+
+        if nvrflag:
+            self.device_type = NVR_DEVICE
+        else:
+            self.device_type = CAM_DEVICE
+        _LOGGING.debug('Processed %s as %s Device.',
+                       self.cam_id, self.device_type)
 
         _LOGGING.debug('Found events: %s', events)
         self.hik_request.close()
@@ -247,11 +280,20 @@ class HikCamera(object):
 
         try:
             response = self.hik_request.get(url)
+            if response.status_code == 404:
+                # Try alternate URL for deviceInfo
+                _LOGGING.debug('Using alternate deviceInfo URL.')
+                url = '%s/System/deviceInfo' % self.root_url
+                response = self.hik_request.get(url)
+
         except requests.exceptions.RequestException as err:
             _LOGGING.error('Unable to fetch deviceInfo, error: %s', err)
             return None
 
-        # Response of 200 means OK
+        if response.status_code != 200:
+            # If we didn't recieve 200, abort
+            _LOGGING.debug('Unable to fetch device info.')
+            return None
 
         try:
             tree = ET.fromstring(response.text)
@@ -304,6 +346,10 @@ class HikCamera(object):
 
             try:
                 stream = self.hik_request.get(url, stream=True)
+                if stream.status_code == 404:
+                    # Try alternate URL for stream
+                    url = '%s/Event/notification/alertStream' % self.root_url
+                    stream = self.hik_request.get(url, stream=True)
 
                 if stream.status_code != 200:
                     raise ValueError('Connection unsucessful.')

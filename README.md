@@ -1,6 +1,6 @@
 # Introduction
 
-This is a python module aiming to expose common API events from a Hikvision IP camera or nvr.
+This is a python module aiming to expose common API events from a Hikvision IP camera or nvr.  Most rebadged models work as well with full functionality.
 
 Code is licensed under the MIT license.
 
