@@ -218,6 +218,9 @@ class HikCamera(object):
 
             for eventtrigger in event_xml:
                 ettype = eventtrigger.find(self.element_query('eventType'))
+                # Catch empty xml defintions
+                if ettype is None:
+                    break
                 etnotify = eventtrigger.find(
                     self.element_query('EventTriggerNotificationList'))
                 etchannel = eventtrigger.find(
