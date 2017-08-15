@@ -1,5 +1,4 @@
-.. image:: https://img.shields.io/pypi/v/pyHik.svg
-    :target: https://pypi.python.org/pypi/pyHik
+[![PyPI](https://img.shields.io/pypi/v/pyHik.svg)](https://pypi.python.org/pypi/pyHik)
 
 # Introduction
 
