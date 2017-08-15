@@ -1,3 +1,6 @@
+.. image:: https://img.shields.io/pypi/v/pyHik.svg
+    :target: https://pypi.python.org/pypi/pyHik
+
 # Introduction
 
 This is a python module aiming to expose common API events from a Hikvision IP camera or nvr.  Most rebadged models work as well with full functionality.
