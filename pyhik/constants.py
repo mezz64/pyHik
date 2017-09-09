@@ -32,6 +32,7 @@ SENSOR_MAP = {
     'PIR': 'PIR Alarm',
     'facedetection': 'Face Detection',
     'scenechangedetection': 'Scene Change Detection',
+    'IO': 'I/O',
 }
 
 CAM_DEVICE = 'CAM'
