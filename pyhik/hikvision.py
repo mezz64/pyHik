@@ -407,6 +407,7 @@ class HikCamera(object):
                 fail_count += 1
                 _LOGGING.warning('%s Connection Failed. Waiting %ss. Err: %s',
                                  self.name, (fail_count * 5) + 5, err)
+                parse_string = ""
                 self.watchdog.stop()
                 self.hik_request.close()
                 time.sleep(5)
