@@ -33,6 +33,8 @@ SENSOR_MAP = {
     'facedetection': 'Face Detection',
     'scenechangedetection': 'Scene Change Detection',
     'IO': 'I/O',
+    'unattendedBaggage': 'Unattended Baggage',
+    'attendedBaggage': 'Attended Baggage',
 }
 
 CAM_DEVICE = 'CAM'

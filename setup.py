@@ -16,12 +16,12 @@ from distutils.core import setup
 setup(
     name='pyHik',
     packages=['pyhik'],
-    version='0.1.4',
+    version='0.1.5',
     description='Provides a python api to interact with a Hikvision camera event stream.',
     author='John Mihalic',
     author_email='mezz64@users.noreply.github.com',
     url='https://github.com/mezz64/pyhik',
-    download_url='https://github.com/mezz64/pyhik/tarball/0.1.4',
+    download_url='https://github.com/mezz64/pyhik/tarball/0.1.5',
     keywords=['hik', 'hikvision', 'event stream', 'events', 'api wrapper', 'homeassistant'],
     classifiers=[],
     )

@@ -69,7 +69,7 @@ class HikCamera(object):
 
         self.event_states = {}
 
-        self.watchdog = Watchdog(15.0, self.watchdog_handler)
+        self.watchdog = Watchdog(30.0, self.watchdog_handler)
 
         self.namespace = XML_NAMESPACE
 
