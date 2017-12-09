@@ -370,9 +370,9 @@ class HikCamera(object):
                         if str_line.find('Content-Length') != -1:
                             # Start of event message
                             start_event = True
-                        elif str_line.find('--boundary') != -1 or \
-                                str_line.find('--hikboundary') != -1:
-                            # Message boundry found
+                        elif str_line.find('</EventNotificationAlert>') != -1:
+                            # Message end found found
+                            parse_string += str_line
                             start_event = False
                             if parse_string:
                                 tree = ET.fromstring(parse_string)
