@@ -6,6 +6,12 @@ Copyright (c) 2016-2017 John Mihalic <https://github.com/mezz64>
 Licensed under the MIT license.
 """
 
+MAJOR_VERSION = 0
+MINOR_VERSION = 1
+SUB_MINOR_VERSION = 7
+__version__ = '{}.{}.{}'.format(
+    MAJOR_VERSION, MINOR_VERSION, SUB_MINOR_VERSION)
+
 DEFAULT_PORT = 80
 XML_ENCODING = 'UTF-8'
 XML_NAMESPACE = 'http://www.hikvision.com/ver20/XMLSchema'

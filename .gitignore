@@ -63,3 +63,8 @@ docs/_build/
 
 # PyBuilder
 target/
+
+# VirtualEnv
+bin/
+local/
+share/

@@ -34,12 +34,12 @@ except ImportError:
 from pyhik.watchdog import Watchdog
 from pyhik.constants import (
     DEFAULT_PORT, DEFAULT_HEADERS, XML_NAMESPACE, SENSOR_MAP,
-    CAM_DEVICE, NVR_DEVICE)
+    CAM_DEVICE, NVR_DEVICE, __version__)
 
 _LOGGING = logging.getLogger(__name__)
 
 # Hide nuisance requests logging
-logging.getLogger('requests').setLevel(logging.CRITICAL)
+logging.getLogger('requests.packages.urllib3').setLevel(logging.CRITICAL)
 
 
 """
@@ -65,11 +65,12 @@ class HikCamera(object):
                  usr=None, pwd=None):
         """Initialize device."""
 
-        _LOGGING.debug("Initializing new hikvision device at: %s", host)
+        _LOGGING.debug("pyHik %s initializing new hikvision device at: %s",
+                       __version__, host)
 
         self.event_states = {}
 
-        self.watchdog = Watchdog(30.0, self.watchdog_handler)
+        self.watchdog = Watchdog(300.0, self.watchdog_handler)
 
         self.namespace = XML_NAMESPACE
 
@@ -205,6 +206,7 @@ class HikCamera(object):
             # If we didn't recieve 200, abort
             return None
 
+        # pylint: disable=too-many-nested-blocks
         try:
             content = ET.fromstring(response.text)
 
@@ -388,7 +390,7 @@ class HikCamera(object):
                         break
                     elif reset_event.is_set():
                         # We need to reset the connection.
-                        break
+                        raise ValueError('Watchdog failed.')
 
                 if kill_event.is_set():
                     # We were asked to stop the thread so lets do so.
@@ -399,12 +401,12 @@ class HikCamera(object):
                     return
                 elif reset_event.is_set():
                     # We need to reset the connection.
-                    self.reset_thrd.clear()
-                    raise ValueError('Watchdog failed, resetting connection.')
+                    raise ValueError('Watchdog failed.')
 
             except (ValueError,
                     requests.exceptions.ChunkedEncodingError) as err:
                 fail_count += 1
+                reset_event.clear()
                 _LOGGING.warning('%s Connection Failed. Waiting %ss. Err: %s',
                                  self.name, (fail_count * 5) + 5, err)
                 parse_string = ""
