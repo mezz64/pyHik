@@ -56,6 +56,10 @@ report IR status and allow
 
 """
 
+# The name 'id' should always be last
+CHANNEL_NAMES = ['dynVideoInputChannelID', 'videoInputChannelID',
+                 'dynInputIOPortID', 'inputIOPortID',
+                 'id']
 
 # pylint: disable=too-many-instance-attributes
 class HikCamera(object):
@@ -225,27 +229,24 @@ class HikCamera(object):
                     break
                 etnotify = eventtrigger.find(
                     self.element_query('EventTriggerNotificationList'))
-                etchannel = eventtrigger.find(
-                    self.element_query('dynVideoInputChannelID'))
-                if etchannel is None:
-                    # Try alternate channel field
-                    etchannel = eventtrigger.find(
-                        self.element_query('videoInputChannelID'))
-                if etchannel is None:
-                    # Try 2nd alternate channel field
-                    try:
-                        etchannel = eventtrigger.find(
-                            self.element_query('id'))
-                        # Need to make sure this is actually a number
-                        int(etchannel.text)
-                    except ValueError:
-                        # Field must not be an integer
-                        etchannel = None
 
-                if etchannel is not None:
-                    if int(etchannel.text) > 1:
-                        # Must be an nvr
-                        nvrflag = True
+                etchannel = None
+                etchannel_num = 0
+
+                for node_name in CHANNEL_NAMES:
+                    etchannel = eventtrigger.find(
+                        self.element_query(node_name))
+                    if etchannel is not None:
+                        try:
+                            # Need to make sure this is actually a number
+                            etchannel_num = int(etchannel.text)
+                            if etchannel_num > 1:
+                                # Must be an nvr
+                                nvrflag = True
+                            break
+                        except ValueError:
+                            # Field must not be an integer
+                            pass
 
                 if etnotify:
                     for notifytrigger in etnotify:
@@ -256,11 +257,8 @@ class HikCamera(object):
                             If we got this far we found an event that we want
                             to track.
                             """
-                            if etchannel is not None:
-                                events.setdefault(ettype.text, []) \
-                                    .append(int(etchannel.text))
-                            else:
-                                events.setdefault(ettype.text, []).append(0)
+                            events.setdefault(ettype.text, []) \
+                                .append(etchannel_num)
 
         except (AttributeError, ET.ParseError) as err:
             _LOGGING.error(
