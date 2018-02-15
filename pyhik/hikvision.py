@@ -312,6 +312,7 @@ class HikCamera(object):
 
         if response.status_code == requests.codes.unauthorized:
             _LOGGING.error('Authentication failed')
+            return None
 
         if response.status_code != 200:
             # If we didn't recieve 200, abort
