@@ -67,7 +67,7 @@ class HikCamera(object):
         """Initialize device."""
 
         _LOGGING.debug("pyHik %s initializing new hikvision device at: %s",
-                        __version__, host)
+                       __version__, host)
 
         self.event_states = {}
 
