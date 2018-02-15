@@ -63,12 +63,11 @@ class HikCamera(object):
     """Creates a new Hikvision api device."""
 
     def __init__(self, host=None, port=DEFAULT_PORT,
-                 usr=None, pwd=None, useDigestAuth=False):
+                 usr=None, pwd=None):
         """Initialize device."""
 
-        _LOGGING.debug("pyHik %s initializing new hikvision device at: %s" +
-                       ", using %s authentication", __version__, host,
-                       "digest" if useDigestAuth else "basic")
+        _LOGGING.debug("pyHik %s initializing new hikvision device at: %s",
+                        __version__, host)
 
         self.event_states = {}
 
@@ -90,8 +89,10 @@ class HikCamera(object):
         self.root_url = '{}:{}'.format(host, port)
 
         # Build requests session for main thread calls
+        # Default to basic authentication. It will change to digest inside
+        # get_device_info if basic fails
         self.hik_request = requests.Session()
-        self.hik_request.auth = HTTPDigestAuth(usr, pwd) if useDigestAuth else (usr, pwd)
+        self.hik_request.auth = (usr, pwd)
         self.hik_request.timeout = 5
         self.hik_request.headers.update(DEFAULT_HEADERS)
 
@@ -287,15 +288,30 @@ class HikCamera(object):
 
         try:
             response = self.hik_request.get(url)
+            if response.status_code == requests.codes.unauthorized:
+                _LOGGING.debug('Basic authentication failed. Using digest.')
+                self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
+                response = self.hik_request.get(url)
+
             if response.status_code == 404:
                 # Try alternate URL for deviceInfo
                 _LOGGING.debug('Using alternate deviceInfo URL.')
                 url = '%s/System/deviceInfo' % self.root_url
                 response = self.hik_request.get(url)
+                # Not sure this is required. Usually a server will authenticate
+                # before checking if the url is valid, but that might be vendor
+                # specific.
+                if response.status_code == requests.codes.unauthorized:
+                    _LOGGING.debug('Basic authentication failed. Using digest.')
+                    self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
+                    response = self.hik_request.get(url)
 
         except requests.exceptions.RequestException as err:
             _LOGGING.error('Unable to fetch deviceInfo, error: %s', err)
             return None
+
+        if response.status_code == requests.codes.unauthorized:
+            _LOGGING.error('Authentication failed')
 
         if response.status_code != 200:
             # If we didn't recieve 200, abort
