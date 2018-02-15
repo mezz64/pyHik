@@ -41,6 +41,7 @@ SENSOR_MAP = {
     'IO': 'I/O',
     'unattendedBaggage': 'Unattended Baggage',
     'attendedBaggage': 'Attended Baggage',
+    'recordingfailure': 'Recording Failure'
 }
 
 CAM_DEVICE = 'CAM'
