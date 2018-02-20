@@ -195,7 +195,7 @@ class HikCamera(object):
 
         try:
             response = self.hik_request.get(url)
-            if response.status_code == 404:
+            if response.status_code == requests.codes.not_found:
                 # Try alternate URL for triggers
                 _LOGGING.debug('Using alternate triggers URL.')
                 url = '%s/Event/triggers' % self.root_url
@@ -293,18 +293,11 @@ class HikCamera(object):
                 self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
                 response = self.hik_request.get(url)
 
-            if response.status_code == 404:
+            if response.status_code == requests.codes.not_found:
                 # Try alternate URL for deviceInfo
                 _LOGGING.debug('Using alternate deviceInfo URL.')
                 url = '%s/System/deviceInfo' % self.root_url
                 response = self.hik_request.get(url)
-                # Not sure this is required. Usually a server will authenticate
-                # before checking if the url is valid, but that might be vendor
-                # specific.
-                if response.status_code == requests.codes.unauthorized:
-                    _LOGGING.debug('Basic authentication failed. Using digest.')
-                    self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
-                    response = self.hik_request.get(url)
 
         except requests.exceptions.RequestException as err:
             _LOGGING.error('Unable to fetch deviceInfo, error: %s', err)
@@ -314,7 +307,7 @@ class HikCamera(object):
             _LOGGING.error('Authentication failed')
             return None
 
-        if response.status_code != 200:
+        if response.status_code != requests.codes.ok:
             # If we didn't recieve 200, abort
             _LOGGING.debug('Unable to fetch device info.')
             return None
@@ -370,12 +363,12 @@ class HikCamera(object):
 
             try:
                 stream = self.hik_request.get(url, stream=True)
-                if stream.status_code == 404:
+                if stream.status_code == requests.codes.not_found:
                     # Try alternate URL for stream
                     url = '%s/Event/notification/alertStream' % self.root_url
                     stream = self.hik_request.get(url, stream=True)
 
-                if stream.status_code != 200:
+                if stream.status_code != requests.codes.ok:
                     raise ValueError('Connection unsucessful.')
                 else:
                     _LOGGING.debug('%s Connection Successful.', self.name)
