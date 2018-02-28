@@ -2,7 +2,7 @@
 pyhik.hikvision
 ~~~~~~~~~~~~~~~~~~~~
 Provides api for Hikvision events
-Copyright (c) 2016-2017 John Mihalic <https://github.com/mezz64>
+Copyright (c) 2016-2018 John Mihalic <https://github.com/mezz64>
 Licensed under the MIT license.
 
 Based on the following api documentation:
@@ -40,7 +40,7 @@ from pyhik.constants import (
 _LOGGING = logging.getLogger(__name__)
 
 # Hide nuisance requests logging
-logging.getLogger('requests.packages.urllib3').setLevel(logging.CRITICAL)
+logging.getLogger('urllib3').setLevel(logging.ERROR)
 
 
 """
