@@ -23,6 +23,7 @@ except ImportError:
 
 import threading
 import requests
+from requests.auth import HTTPDigestAuth
 
 # Make pydispatcher optional to support legacy implentations
 # New usage should implement the event_callback
@@ -92,6 +93,8 @@ class HikCamera(object):
         self.root_url = '{}:{}'.format(host, port)
 
         # Build requests session for main thread calls
+        # Default to basic authentication. It will change to digest inside
+        # get_device_info if basic fails
         self.hik_request = requests.Session()
         self.hik_request.auth = (usr, pwd)
         self.hik_request.timeout = 5
@@ -196,7 +199,7 @@ class HikCamera(object):
 
         try:
             response = self.hik_request.get(url)
-            if response.status_code == 404:
+            if response.status_code == requests.codes.not_found:
                 # Try alternate URL for triggers
                 _LOGGING.debug('Using alternate triggers URL.')
                 url = '%s/Event/triggers' % self.root_url
@@ -280,21 +283,39 @@ class HikCamera(object):
         """Parse deviceInfo into dictionary."""
         device_info = {}
         url = '%s/ISAPI/System/deviceInfo' % self.root_url
+        using_digest = False
 
         try:
             response = self.hik_request.get(url)
-            if response.status_code == 404:
+            if response.status_code == requests.codes.unauthorized:
+                _LOGGING.debug('Basic authentication failed. Using digest.')
+                self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
+                using_digest = True
+                response = self.hik_request.get(url)
+
+            if response.status_code == requests.codes.not_found:
                 # Try alternate URL for deviceInfo
                 _LOGGING.debug('Using alternate deviceInfo URL.')
                 url = '%s/System/deviceInfo' % self.root_url
                 response = self.hik_request.get(url)
+                # Seems to be difference between camera and nvr, they can't seem to
+                # agree if they should 404 or 401 first
+                if not using_digest and response.status_code == requests.codes.unauthorized:
+                    _LOGGING.debug('Basic authentication failed. Using digest.')
+                    self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
+                    using_digest = True
+                    response = self.hik_request.get(url)
 
         except requests.exceptions.RequestException as err:
             _LOGGING.error('Unable to fetch deviceInfo, error: %s', err)
             return None
 
-        if response.status_code != 200:
-            # If we didn't recieve 200, abort
+        if response.status_code == requests.codes.unauthorized:
+            _LOGGING.error('Authentication failed')
+            return None
+
+        if response.status_code != requests.codes.ok:
+            # If we didn't receive 200, abort
             _LOGGING.debug('Unable to fetch device info.')
             return None
 
@@ -349,12 +370,12 @@ class HikCamera(object):
 
             try:
                 stream = self.hik_request.get(url, stream=True)
-                if stream.status_code == 404:
+                if stream.status_code == requests.codes.not_found:
                     # Try alternate URL for stream
                     url = '%s/Event/notification/alertStream' % self.root_url
                     stream = self.hik_request.get(url, stream=True)
 
-                if stream.status_code != 200:
+                if stream.status_code != requests.codes.ok:
                     raise ValueError('Connection unsucessful.')
                 else:
                     _LOGGING.debug('%s Connection Successful.', self.name)
