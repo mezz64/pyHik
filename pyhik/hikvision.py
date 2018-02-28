@@ -285,12 +285,14 @@ class HikCamera(object):
         """Parse deviceInfo into dictionary."""
         device_info = {}
         url = '%s/ISAPI/System/deviceInfo' % self.root_url
+        using_digest = False
 
         try:
             response = self.hik_request.get(url)
             if response.status_code == requests.codes.unauthorized:
                 _LOGGING.debug('Basic authentication failed. Using digest.')
                 self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
+                using_digest = True
                 response = self.hik_request.get(url)
 
             if response.status_code == requests.codes.not_found:
@@ -298,6 +300,13 @@ class HikCamera(object):
                 _LOGGING.debug('Using alternate deviceInfo URL.')
                 url = '%s/System/deviceInfo' % self.root_url
                 response = self.hik_request.get(url)
+                # Seems to be difference between camera and nvr, they can't seem to
+                # agree if they should 404 or 401 first
+                if not using_digest and response.status_code == requests.codes.unauthorized:
+                    _LOGGING.debug('Basic authentication failed. Using digest.')
+                    self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
+                    using_digest = True
+                    response = self.hik_request.get(url)
 
         except requests.exceptions.RequestException as err:
             _LOGGING.error('Unable to fetch deviceInfo, error: %s', err)
@@ -308,7 +317,7 @@ class HikCamera(object):
             return None
 
         if response.status_code != requests.codes.ok:
-            # If we didn't recieve 200, abort
+            # If we didn't receive 200, abort
             _LOGGING.debug('Unable to fetch device info.')
             return None
 
