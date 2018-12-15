@@ -174,7 +174,7 @@ class HikCamera(object):
                 for channel in channel_list:
                     try:
                         self.event_states.setdefault(
-                            SENSOR_MAP[event], []).append(
+                            SENSOR_MAP[event.lower()], []).append(
                                 [False, channel, 0, datetime.datetime.now()])
                     except KeyError:
                         # Sensor type doesn't have a known friendly name
@@ -440,7 +440,7 @@ class HikCamera(object):
         """Process incoming event stream packets."""
         try:
             etype = SENSOR_MAP[tree.find(
-                self.element_query('eventType')).text]
+                self.element_query('eventType')).text.lower()]
             estate = tree.find(
                 self.element_query('eventState')).text
             echid = tree.find(
