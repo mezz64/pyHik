@@ -22,7 +22,7 @@ DEFAULT_HEADERS = {
 }
 
 SENSOR_MAP = {
-    'VMD': 'Motion',
+    'vmd': 'Motion',
     'linedetection': 'Line Crossing',
     'fielddetection': 'Field Detection',
     'videoloss': 'Video Loss',
@@ -35,12 +35,12 @@ SENSOR_MAP = {
     'illaccess': 'Illegal Access',
     'videomismatch': 'Video Mismatch',
     'badvideo': 'Bad Video',
-    'PIR': 'PIR Alarm',
+    'pir': 'PIR Alarm',
     'facedetection': 'Face Detection',
     'scenechangedetection': 'Scene Change Detection',
-    'IO': 'I/O',
-    'unattendedBaggage': 'Unattended Baggage',
-    'attendedBaggage': 'Attended Baggage',
+    'io': 'I/O',
+    'unattendedbaggage': 'Unattended Baggage',
+    'attendedbaggage': 'Attended Baggage',
     'recordingfailure': 'Recording Failure'
 }
 
