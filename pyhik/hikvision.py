@@ -386,11 +386,12 @@ class HikCamera(object):
                     # _LOGGING.debug('Processing line from %s', self.name)
                     # filter out keep-alive new lines
                     if line:
-                        str_line = line.decode("utf-8")
+                        str_line = line.decode("utf-8", "ignore")
                         # New events start with --boundry
-                        if str_line.find('Content-Length') != -1:
+                        if str_line.find('<EventNotificationAlert') != -1:
                             # Start of event message
                             start_event = True
+                            parse_string += str_line
                         elif str_line.find('</EventNotificationAlert>') != -1:
                             # Message end found found
                             parse_string += str_line
