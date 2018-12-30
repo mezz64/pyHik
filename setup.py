@@ -1,4 +1,4 @@
-# Copyright (c) 2016-2018 John Mihalic <https://github.com/mezz64>
+# Copyright (c) 2016-2019 John Mihalic <https://github.com/mezz64>
 # Licensed under the MIT license.
 
 # Used this guide to create module
@@ -16,12 +16,12 @@ from distutils.core import setup
 setup(
     name='pyHik',
     packages=['pyhik'],
-    version='0.1.8',
+    version='0.1.9',
     description='Provides a python api to interact with a Hikvision camera event stream.',
     author='John Mihalic',
     author_email='mezz64@users.noreply.github.com',
     url='https://github.com/mezz64/pyhik',
-    download_url='https://github.com/mezz64/pyhik/tarball/0.1.8',
+    download_url='https://github.com/mezz64/pyhik/tarball/0.1.9',
     keywords=['hik', 'hikvision', 'event stream', 'events', 'api wrapper', 'homeassistant'],
     classifiers=[],
     )
