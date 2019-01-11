@@ -37,7 +37,12 @@ from pyhik.constants import (
     DEFAULT_PORT, DEFAULT_HEADERS, XML_NAMESPACE, SENSOR_MAP,
     CAM_DEVICE, NVR_DEVICE, __version__)
 
+logging.basicConfig(format=(
+    '%(asctime)s,%(msecs)d %(levelname)-8s '
+    '[%(filename)s:%(lineno)d] %(message)s'
+))
 _LOGGING = logging.getLogger(__name__)
+
 
 # Hide nuisance requests logging
 logging.getLogger('urllib3').setLevel(logging.ERROR)
@@ -45,11 +50,7 @@ logging.getLogger('urllib3').setLevel(logging.ERROR)
 
 """
 Things still to do:
- - Support status of motion detection and turning on/off
  - Support status of day/night and switching
-
-Motion detection URL:
-http://X.X.X.X/ISAPI/System/Video/inputs/channels/1/motionDetection
 
 IR switch URL:
 http://X.X.X.X/ISAPI/Image/channels/1/ircutFilter
@@ -89,6 +90,7 @@ class HikCamera(object):
         self.cam_id = 0
         self.name = ''
         self.device_type = None
+        self.motion_detection_xml = None
 
         self.root_url = '{}:{}'.format(host, port)
 
@@ -131,6 +133,72 @@ class HikCamera(object):
     def current_event_states(self):
         """Return Event states dictionary"""
         return self.event_states
+
+    def get_motion_detection(self):
+        url = '%s/MotionDetection/1' % self.root_url
+        try:
+            response = self.hik_request.get(url)
+        except requests.exceptions.RequestException as err:
+            _LOGGING.error('Unable to fetch MotionDetection, error: %s', err)
+            return None
+
+        if response.status_code == requests.codes.unauthorized:
+            _LOGGING.error('Authentication failed')
+            return None
+
+        if response.status_code != requests.codes.ok:
+            # If we didn't receive 200, abort
+            _LOGGING.debug('Unable to fetch motion detection.')
+            return None
+
+        try:
+            tree = ET.fromstring(response.text)
+            nmsp = tree.tag.split('}')[0].strip('{')
+            self.namespace = nmsp if nmsp.startswith('http') else XML_NAMESPACE
+            ET.register_namespace("", self.namespace)
+            enabled = tree.find(self.element_query('enabled'))
+
+            if enabled is not None:
+                self.motion_detection_xml = tree
+            return {'true': True, 'false': False}[enabled.text]
+
+        except AttributeError as err:
+            _LOGGING.error('Entire response: %s', response.text)
+            _LOGGING.error('There was a problem: %s', err)
+            return None
+
+    def enable_motion_detection(self):
+        self._set_motion_detection(True)
+
+    def disable_motion_detection(self):
+        self._set_motion_detection(False)
+
+    def _set_motion_detection(self, enable):
+        url = '%s/MotionDetection/1' % self.root_url
+        self.get_motion_detection()
+
+        enabled = self.motion_detection_xml.find(self.element_query('enabled'))
+        if enabled is None:
+            _LOGGING.error("Couldn't find 'enabled' in the xml")
+            _LOGGING.error('XML: %s', ET.tostring(self.motion_detection_xml))
+            return
+
+        enabled.text = 'true' if enable else 'false'
+        xml = ET.tostring(self.motion_detection_xml)
+
+        try:
+            response = self.hik_request.put(url, data=xml)
+        except requests.exceptions.RequestException as err:
+            _LOGGING.error('Unable to set MotionDetection, error: %s', err)
+            return
+
+        if response.status_code == requests.codes.unauthorized:
+            _LOGGING.error('Authentication failed')
+            return
+
+        if response.status_code != requests.codes.ok:
+            # If we didn't receive 200, abort
+            _LOGGING.error('Unable to set motion detection: %s', response.text)
 
     def add_update_callback(self, callback, sensor):
         """Register as callback for when a matching device sensor changes."""
