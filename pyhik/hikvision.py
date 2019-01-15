@@ -37,10 +37,7 @@ from pyhik.constants import (
     DEFAULT_PORT, DEFAULT_HEADERS, XML_NAMESPACE, SENSOR_MAP,
     CAM_DEVICE, NVR_DEVICE, __version__)
 
-logging.basicConfig(format=(
-    '%(asctime)s,%(msecs)d %(levelname)-8s '
-    '[%(filename)s:%(lineno)d] %(message)s'
-))
+
 _LOGGING = logging.getLogger(__name__)
 
 
