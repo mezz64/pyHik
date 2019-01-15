@@ -90,7 +90,8 @@ class HikCamera(object):
         self.cam_id = 0
         self.name = ''
         self.device_type = None
-        self.motion_detection_xml = None
+        self.motion_detection = None
+        self._motion_detection_xml = None
 
         self.root_url = '{}:{}'.format(host, port)
 
@@ -140,16 +141,19 @@ class HikCamera(object):
             response = self.hik_request.get(url)
         except requests.exceptions.RequestException as err:
             _LOGGING.error('Unable to fetch MotionDetection, error: %s', err)
-            return None
+            self.motion_detection = None
+            return self.motion_detection
 
         if response.status_code == requests.codes.unauthorized:
             _LOGGING.error('Authentication failed')
-            return None
+            self.motion_detection = None
+            return self.motion_detection
 
         if response.status_code != requests.codes.ok:
             # If we didn't receive 200, abort
             _LOGGING.debug('Unable to fetch motion detection.')
-            return None
+            self.motion_detection = None
+            return self.motion_detection
 
         try:
             tree = ET.fromstring(response.text)
@@ -159,13 +163,15 @@ class HikCamera(object):
             enabled = tree.find(self.element_query('enabled'))
 
             if enabled is not None:
-                self.motion_detection_xml = tree
-            return {'true': True, 'false': False}[enabled.text]
+                self._motion_detection_xml = tree
+            self.motion_detection = {'true': True, 'false': False}[enabled.text]
+            return self.motion_detection
 
         except AttributeError as err:
             _LOGGING.error('Entire response: %s', response.text)
             _LOGGING.error('There was a problem: %s', err)
-            return None
+            self.motion_detection = None
+            return self.motion_detection
 
     def enable_motion_detection(self):
         self._set_motion_detection(True)
@@ -177,14 +183,14 @@ class HikCamera(object):
         url = '%s/MotionDetection/1' % self.root_url
         self.get_motion_detection()
 
-        enabled = self.motion_detection_xml.find(self.element_query('enabled'))
+        enabled = self._motion_detection_xml.find(self.element_query('enabled'))
         if enabled is None:
             _LOGGING.error("Couldn't find 'enabled' in the xml")
-            _LOGGING.error('XML: %s', ET.tostring(self.motion_detection_xml))
+            _LOGGING.error('XML: %s', ET.tostring(self._motion_detection_xml))
             return
 
         enabled.text = 'true' if enable else 'false'
-        xml = ET.tostring(self.motion_detection_xml)
+        xml = ET.tostring(self._motion_detection_xml)
 
         try:
             response = self.hik_request.put(url, data=xml)
@@ -253,6 +259,8 @@ class HikCamera(object):
             _LOGGING.debug('Initialized Dictionary: %s', self.event_states)
         else:
             _LOGGING.debug('No Events available in dictionary.')
+
+        self.motion_detection = self.get_motion_detection()
 
     def get_event_triggers(self):
         """
