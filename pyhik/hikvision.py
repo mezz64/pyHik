@@ -132,6 +132,11 @@ class HikCamera(object):
         """Return Event states dictionary"""
         return self.event_states
 
+    @property
+    def current_motion_detection_state(self):
+        """Return current state of motion detection property"""
+        return self.motion_detection
+
     def get_motion_detection(self):
         url = '%s/MotionDetection/1' % self.root_url
         try:
@@ -178,7 +183,9 @@ class HikCamera(object):
 
     def _set_motion_detection(self, enable):
         url = '%s/MotionDetection/1' % self.root_url
-        self.get_motion_detection()
+        current_state = self.get_motion_detection()
+        if enable == current_state
+            return
 
         enabled = self._motion_detection_xml.find(self.element_query('enabled'))
         if enabled is None:
@@ -257,7 +264,7 @@ class HikCamera(object):
         else:
             _LOGGING.debug('No Events available in dictionary.')
 
-        self.motion_detection = self.get_motion_detection()
+        self.get_motion_detection()
 
     def get_event_triggers(self):
         """
