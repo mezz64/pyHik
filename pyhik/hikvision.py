@@ -138,7 +138,9 @@ class HikCamera(object):
         return self.motion_detection
 
     def get_motion_detection(self):
-        url = '%s/MotionDetection/1' % self.root_url
+        url = ('%s/ISAPI/System/Video/inputs/'
+               'channels/1/motionDetection') % self.root_url
+
         try:
             response = self.hik_request.get(url)
         except requests.exceptions.RequestException as err:
@@ -159,8 +161,6 @@ class HikCamera(object):
 
         try:
             tree = ET.fromstring(response.text)
-            nmsp = tree.tag.split('}')[0].strip('{')
-            self.namespace = nmsp if nmsp.startswith('http') else XML_NAMESPACE
             ET.register_namespace("", self.namespace)
             enabled = tree.find(self.element_query('enabled'))
 
@@ -182,10 +182,8 @@ class HikCamera(object):
         self._set_motion_detection(False)
 
     def _set_motion_detection(self, enable):
-        url = '%s/MotionDetection/1' % self.root_url
-        current_state = self.get_motion_detection()
-        if enable == current_state
-            return
+        url = ('%s/ISAPI/System/Video/inputs/'
+               'channels/1/motionDetection') % self.root_url
 
         enabled = self._motion_detection_xml.find(self.element_query('enabled'))
         if enabled is None:
@@ -209,6 +207,8 @@ class HikCamera(object):
         if response.status_code != requests.codes.ok:
             # If we didn't receive 200, abort
             _LOGGING.error('Unable to set motion detection: %s', response.text)
+
+        self.motion_detection = enable
 
     def add_update_callback(self, callback, sensor):
         """Register as callback for when a matching device sensor changes."""
