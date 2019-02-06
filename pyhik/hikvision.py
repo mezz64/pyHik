@@ -274,6 +274,7 @@ class HikCamera(object):
         """
         events = {}
         nvrflag = False
+        event_xml = []
 
         url = '%s/ISAPI/Event/triggers' % self.root_url
 
