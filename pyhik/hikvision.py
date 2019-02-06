@@ -35,7 +35,7 @@ except ImportError:
 from pyhik.watchdog import Watchdog
 from pyhik.constants import (
     DEFAULT_PORT, DEFAULT_HEADERS, XML_NAMESPACE, SENSOR_MAP,
-    CAM_DEVICE, NVR_DEVICE, __version__)
+    CAM_DEVICE, NVR_DEVICE, __version__, DEFAULT_CONNECTION_TIMEOUT)
 
 
 _LOGGING = logging.getLogger(__name__)
@@ -367,7 +367,7 @@ class HikCamera(object):
         using_digest = False
 
         try:
-            response = self.hik_request.get(url)
+            response = self.hik_request.get(url, timeout=DEFAULT_CONNECTION_TIMEOUT)
             if response.status_code == requests.codes.unauthorized:
                 _LOGGING.debug('Basic authentication failed. Using digest.')
                 self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)

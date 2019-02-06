@@ -13,6 +13,7 @@ __version__ = '{}.{}.{}'.format(
     MAJOR_VERSION, MINOR_VERSION, SUB_MINOR_VERSION)
 
 DEFAULT_PORT = 80
+DEFAULT_CONNECTION_TIMEOUT = 4
 XML_ENCODING = 'UTF-8'
 XML_NAMESPACE = 'http://www.hikvision.com/ver20/XMLSchema'
 
