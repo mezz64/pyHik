@@ -60,6 +60,12 @@ CHANNEL_NAMES = ['dynVideoInputChannelID', 'videoInputChannelID',
                  'dynInputIOPortID', 'inputIOPortID',
                  'id']
 
+class HikRequestsSession(requests.Session):
+    def get(self, url, **kwargs):
+        kwargs.update({'timeout': DEFAULT_CONNECTION_TIMEOUT})
+        return super(HikRequestsSession, self).get(url, **kwargs)
+
+
 # pylint: disable=too-many-instance-attributes
 class HikCamera(object):
     """Creates a new Hikvision api device."""
@@ -95,9 +101,8 @@ class HikCamera(object):
         # Build requests session for main thread calls
         # Default to basic authentication. It will change to digest inside
         # get_device_info if basic fails
-        self.hik_request = requests.Session()
+        self.hik_request = HikRequestsSession()
         self.hik_request.auth = (usr, pwd)
-        self.hik_request.timeout = 5
         self.hik_request.headers.update(DEFAULT_HEADERS)
 
         # Define event stream processing thread
@@ -367,7 +372,7 @@ class HikCamera(object):
         using_digest = False
 
         try:
-            response = self.hik_request.get(url, timeout=DEFAULT_CONNECTION_TIMEOUT)
+            response = self.hik_request.get(url)
             if response.status_code == requests.codes.unauthorized:
                 _LOGGING.debug('Basic authentication failed. Using digest.')
                 self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
