@@ -8,9 +8,12 @@ Licensed under the MIT license.
 
 MAJOR_VERSION = 0
 MINOR_VERSION = 2
-SUB_MINOR_VERSION = 0
+SUB_MINOR_VERSION = 1
 __version__ = '{}.{}.{}'.format(
     MAJOR_VERSION, MINOR_VERSION, SUB_MINOR_VERSION)
+
+CONNECT_TIMEOUT = 5
+READ_TIMEOUT = 60
 
 DEFAULT_PORT = 80
 XML_ENCODING = 'UTF-8'
@@ -41,7 +44,9 @@ SENSOR_MAP = {
     'io': 'I/O',
     'unattendedbaggage': 'Unattended Baggage',
     'attendedbaggage': 'Attended Baggage',
-    'recordingfailure': 'Recording Failure'
+    'recordingfailure': 'Recording Failure',
+    'regionExiting': "Exiting Region",
+    'regionEntrance': "Entering Region"
 }
 
 CAM_DEVICE = 'CAM'

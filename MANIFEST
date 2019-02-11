@@ -5,3 +5,4 @@ pyhik/__init__.py
 pyhik/constants.py
 pyhik/hikvision.py
 pyhik/watchdog.py
+test/test_hikvision.py

@@ -2,7 +2,7 @@
 pyhik.hikvision
 ~~~~~~~~~~~~~~~~~~~~
 Provides api for Hikvision events
-Copyright (c) 2016-2018 John Mihalic <https://github.com/mezz64>
+Copyright (c) 2016-2019 John Mihalic <https://github.com/mezz64>
 Licensed under the MIT license.
 
 Based on the following api documentation:
@@ -35,7 +35,8 @@ except ImportError:
 from pyhik.watchdog import Watchdog
 from pyhik.constants import (
     DEFAULT_PORT, DEFAULT_HEADERS, XML_NAMESPACE, SENSOR_MAP,
-    CAM_DEVICE, NVR_DEVICE, __version__)
+    CAM_DEVICE, NVR_DEVICE, CONNECT_TIMEOUT, READ_TIMEOUT,
+    __version__)
 
 
 _LOGGING = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ report IR status and allow
 CHANNEL_NAMES = ['dynVideoInputChannelID', 'videoInputChannelID',
                  'dynInputIOPortID', 'inputIOPortID',
                  'id']
+
 
 # pylint: disable=too-many-instance-attributes
 class HikCamera(object):
@@ -97,7 +99,6 @@ class HikCamera(object):
         # get_device_info if basic fails
         self.hik_request = requests.Session()
         self.hik_request.auth = (usr, pwd)
-        self.hik_request.timeout = 5
         self.hik_request.headers.update(DEFAULT_HEADERS)
 
         # Define event stream processing thread
@@ -138,12 +139,14 @@ class HikCamera(object):
         return self.motion_detection
 
     def get_motion_detection(self):
+        """Fetch current motion state from camera"""
         url = ('%s/ISAPI/System/Video/inputs/'
                'channels/1/motionDetection') % self.root_url
 
         try:
-            response = self.hik_request.get(url)
-        except requests.exceptions.RequestException as err:
+            response = self.hik_request.get(url, timeout=CONNECT_TIMEOUT)
+        except (requests.exceptions.RequestException,
+                requests.exceptions.ConnectionError) as err:
             _LOGGING.error('Unable to fetch MotionDetection, error: %s', err)
             self.motion_detection = None
             return self.motion_detection
@@ -176,12 +179,15 @@ class HikCamera(object):
             return self.motion_detection
 
     def enable_motion_detection(self):
+        """Enable motion detection"""
         self._set_motion_detection(True)
 
     def disable_motion_detection(self):
+        """Disable motion detection"""
         self._set_motion_detection(False)
 
     def _set_motion_detection(self, enable):
+        """Set desired motion detection state on camera"""
         url = ('%s/ISAPI/System/Video/inputs/'
                'channels/1/motionDetection') % self.root_url
 
@@ -195,8 +201,9 @@ class HikCamera(object):
         xml = ET.tostring(self._motion_detection_xml)
 
         try:
-            response = self.hik_request.put(url, data=xml)
-        except requests.exceptions.RequestException as err:
+            response = self.hik_request.put(url, data=xml, timeout=CONNECT_TIMEOUT)
+        except (requests.exceptions.RequestException,
+                requests.exceptions.ConnectionError) as err:
             _LOGGING.error('Unable to set MotionDetection, error: %s', err)
             return
 
@@ -274,18 +281,20 @@ class HikCamera(object):
         """
         events = {}
         nvrflag = False
+        event_xml = []
 
         url = '%s/ISAPI/Event/triggers' % self.root_url
 
         try:
-            response = self.hik_request.get(url)
+            response = self.hik_request.get(url, timeout=CONNECT_TIMEOUT)
             if response.status_code == requests.codes.not_found:
                 # Try alternate URL for triggers
                 _LOGGING.debug('Using alternate triggers URL.')
                 url = '%s/Event/triggers' % self.root_url
                 response = self.hik_request.get(url)
 
-        except requests.exceptions.RequestException as err:
+        except (requests.exceptions.RequestException,
+                requests.exceptions.ConnectionError) as err:
             _LOGGING.error('Unable to fetch events, error: %s', err)
             return None
 
@@ -366,7 +375,7 @@ class HikCamera(object):
         using_digest = False
 
         try:
-            response = self.hik_request.get(url)
+            response = self.hik_request.get(url, timeout=CONNECT_TIMEOUT)
             if response.status_code == requests.codes.unauthorized:
                 _LOGGING.debug('Basic authentication failed. Using digest.')
                 self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
@@ -386,7 +395,8 @@ class HikCamera(object):
                     using_digest = True
                     response = self.hik_request.get(url)
 
-        except requests.exceptions.RequestException as err:
+        except (requests.exceptions.RequestException,
+                requests.exceptions.ConnectionError) as err:
             _LOGGING.error('Unable to fetch deviceInfo, error: %s', err)
             return None
 
@@ -449,7 +459,9 @@ class HikCamera(object):
         while True:
 
             try:
-                stream = self.hik_request.get(url, stream=True)
+                stream = self.hik_request.get(url, stream=True,
+                                              timeout=(CONNECT_TIMEOUT,
+                                                       READ_TIMEOUT))
                 if stream.status_code == requests.codes.not_found:
                     # Try alternate URL for stream
                     url = '%s/Event/notification/alertStream' % self.root_url
@@ -504,11 +516,12 @@ class HikCamera(object):
                     raise ValueError('Watchdog failed.')
 
             except (ValueError,
+                    requests.exceptions.ConnectionError,
                     requests.exceptions.ChunkedEncodingError) as err:
                 fail_count += 1
                 reset_event.clear()
-                _LOGGING.warning('%s Connection Failed. Waiting %ss. Err: %s',
-                                 self.name, (fail_count * 5) + 5, err)
+                _LOGGING.warning('%s Connection Failed (count=%d). Waiting %ss. Err: %s',
+                                 self.name, fail_count, (fail_count * 5) + 5, err)
                 parse_string = ""
                 self.watchdog.stop()
                 self.hik_request.close()
