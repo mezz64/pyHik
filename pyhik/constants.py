@@ -8,7 +8,7 @@ Licensed under the MIT license.
 
 MAJOR_VERSION = 0
 MINOR_VERSION = 2
-SUB_MINOR_VERSION = 1
+SUB_MINOR_VERSION = 2
 __version__ = '{}.{}.{}'.format(
     MAJOR_VERSION, MINOR_VERSION, SUB_MINOR_VERSION)
 
@@ -45,8 +45,8 @@ SENSOR_MAP = {
     'unattendedbaggage': 'Unattended Baggage',
     'attendedbaggage': 'Attended Baggage',
     'recordingfailure': 'Recording Failure',
-    'regionExiting': "Exiting Region",
-    'regionEntrance': "Entering Region"
+    'regionexiting': "Exiting Region",
+    'regionentrance': "Entering Region"
 }
 
 CAM_DEVICE = 'CAM'
