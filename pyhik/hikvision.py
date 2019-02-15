@@ -263,7 +263,7 @@ class HikCamera(object):
                     try:
                         self.event_states.setdefault(
                             SENSOR_MAP[event.lower()], []).append(
-                                [False, channel, 0, datetime.datetime.now()])
+                                [False, channel, 0, datetime.datetime.now(datetime.timezone.utc)])
                     except KeyError:
                         # Sensor type doesn't have a known friendly name
                         # We can't reliably handle it at this time...
@@ -574,7 +574,7 @@ class HikCamera(object):
                 estate = (estate == 'active')
                 old_state = state[0]
                 attr = [estate, echid, int(ecount),
-                        datetime.datetime.now()]
+                        datetime.datetime.now(datetime.timezone.utc)]
                 self.update_attributes(etype, echid, attr)
 
                 if estate != old_state:
@@ -589,14 +589,14 @@ class HikCamera(object):
         for etype, echannels in self.event_states.items():
             for eprop in echannels:
                 if eprop[3] is not None:
-                    sec_elap = ((datetime.datetime.now()-eprop[3])
+                    sec_elap = ((datetime.datetime.now(datetime.timezone.utc)-eprop[3])
                                 .total_seconds())
                     # print('Seconds since last update: {}'.format(sec_elap))
                     if sec_elap > 5 and eprop[0] is True:
                         _LOGGING.debug('Updating stale event %s on CH(%s)',
                                        etype, eprop[1])
                         attr = [False, eprop[1], eprop[2],
-                                datetime.datetime.now()]
+                                datetime.datetime.now(datetime.timezone.utc)]
                         self.update_attributes(etype, eprop[1], attr)
                         self.publish_changes(etype, eprop[1])
 
