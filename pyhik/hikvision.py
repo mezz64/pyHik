@@ -489,9 +489,12 @@ class HikCamera(object):
                             parse_string += str_line
                             start_event = False
                             if parse_string:
-                                tree = ET.fromstring(parse_string)
-                                self.process_stream(tree)
-                                self.update_stale()
+                                try:
+                                    tree = ET.fromstring(parse_string)
+                                    self.process_stream(tree)
+                                    self.update_stale()
+                                except ET.ParseError as err:
+                                    _LOGGING.error('XML parse error in stream.')
                                 parse_string = ""
                         else:
                             if start_event:
