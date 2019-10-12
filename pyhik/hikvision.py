@@ -61,6 +61,9 @@ CHANNEL_NAMES = ['dynVideoInputChannelID', 'videoInputChannelID',
                  'dynInputIOPortID', 'inputIOPortID',
                  'id']
 
+ID_TYPES = ['channelID', 'dynChannelID', 'inputIOPortID',
+            'dynInputIOPortID']
+
 
 # pylint: disable=too-many-instance-attributes
 class HikCamera(object):
@@ -540,13 +543,18 @@ class HikCamera(object):
                 self.element_query('eventType')).text.lower()]
             estate = tree.find(
                 self.element_query('eventState')).text
-            echid = tree.find(
-                self.element_query('channelID'))
-            if echid is None:
-                # Some devices use a different key
-                echid = tree.find(
-                    self.element_query('dynChannelID'))
-            echid = int(echid.text)
+
+            for idtype in ID_TYPES:
+                echid = tree.find(self.element_query(idtype))
+                if echid is not None:
+                    try:
+                        # Need to make sure this is actually a number
+                        echid = int(echid.text)
+                        break
+                    except ValueError:
+                        # Field must not be an integer
+                        pass
+
             ecount = tree.find(
                 self.element_query('activePostCount')).text
         except (AttributeError, KeyError, IndexError) as err:
