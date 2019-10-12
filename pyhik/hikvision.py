@@ -486,7 +486,7 @@ class HikCamera(object):
                         if str_line.find('<EventNotificationAlert') != -1:
                             # Start of event message
                             start_event = True
-                            parse_string += str_line
+                            parse_string = str_line
                         elif str_line.find('</EventNotificationAlert>') != -1:
                             # Message end found found
                             parse_string += str_line
