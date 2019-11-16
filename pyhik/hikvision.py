@@ -551,8 +551,8 @@ class HikCamera(object):
                         # Need to make sure this is actually a number
                         echid = int(echid.text)
                         break
-                    except ValueError:
-                        # Field must not be an integer
+                    except (ValueError, TypeError) as err:
+                        # Field must not be an integer or is blank
                         pass
 
             ecount = tree.find(
