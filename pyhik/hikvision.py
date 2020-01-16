@@ -18,7 +18,6 @@ import uuid
 
 try:
     import xml.etree.cElementTree as ET
-    from bs4 import BeautifulSoup
 except ImportError:
     import xml.etree.ElementTree as ET
 
@@ -243,6 +242,7 @@ class HikCamera(object):
         device_info = self.get_device_info()
 
         if device_info is None:
+            print('Hello this is it')
             self.name = None
             self.cam_id = None
             self.event_states = None
@@ -402,6 +402,7 @@ class HikCamera(object):
         except (requests.exceptions.RequestException,
                 requests.exceptions.ConnectionError) as err:
             _LOGGING.error('Unable to fetch deviceInfo, error: %s', err)
+            print('This is test')
             return None
 
         if response.status_code == requests.codes.unauthorized:
@@ -431,7 +432,11 @@ class HikCamera(object):
             _LOGGING.error('There was a problem: %s', err)
             return None
 
-    #   Get the status of the device :  /ISAPI/System/status
+    """
+    This function is added by Ayush Pratap Singh (ayushs56@gmail.com)
+    This function is used to get the status of the device
+    """
+
     def get_device_status(self):
         """Parse deviceInfo into dictionary."""
         device_status = {}
@@ -474,15 +479,15 @@ class HikCamera(object):
             return None
 
         try:
-            soup = BeautifulSoup(response.text, 'lxml')
+            tree = ET.fromstring(response.text)
 
-            device_status['currentdevicetime'] = soup.devicestatus.currentdevicetime.string.strip()
-            device_status['deviceuptime'] = soup.devicestatus.deviceuptime.string.strip()
-            device_status['cpudescription'] = soup.devicestatus.cpulist.cpu.cpudescription.string.strip()
-            device_status['cpuutilization'] = soup.devicestatus.cpulist.cpu.cpuutilization.string.strip()
-            device_status['memorydescription'] = soup.devicestatus.memorylist.memory.memorydescription.string.strip()
-            device_status['memoryusage'] = soup.devicestatus.memorylist.memory.memoryusage.string.strip()
-            device_status['memoryavailable'] = soup.devicestatus.memorylist.memory.memoryavailable.string.strip()
+            device_status['currentdevicetime'] = tree[0].text.strip()
+            device_status['deviceuptime'] = tree[1].text.strip()
+            device_status['cpudescription'] = tree[2][0][0].text.strip()
+            device_status['cpuutilization'] = tree[2][0][1].text.strip()
+            device_status['memorydescription'] = tree[3][0][0].text.strip()
+            device_status['memoryusage'] = tree[3][0][1].text.strip()
+            device_status['memoryavailable'] = tree[3][0][2].text.strip()
 
             return device_status
 
@@ -491,7 +496,6 @@ class HikCamera(object):
             _LOGGING.error('There was a problem: %s', err)
             return None
 
-    #   Get the time from the device :  /ISAPI/System/time
     def get_device_time(self):
         """
         Parse device time into dictionary
@@ -535,11 +539,11 @@ class HikCamera(object):
             _LOGGING.debug('Unable to fetch time of device')
             return None
         try:
-            soup = BeautifulSoup(response.text, 'lxml')
+            tree = ET.fromstring(response.text)
 
-            device_time['timemode'] = soup.time.timemode.string
-            device_time['localtime'] = soup.time.localtime.string
-            device_time['timezone'] = soup.time.timezone.string
+            device_time['timemode'] = tree[0].text.strip()
+            device_time['localtime'] = tree[1].text.strip()
+            device_time['timezone'] = tree[2].text.strip()
 
             return device_time
 
@@ -547,8 +551,10 @@ class HikCamera(object):
             _LOGGING.error('Entire response: %s', response.text)
             _LOGGING.error('There was a problem: %s', err)
 
-    #   Get the upnp ports : /ISAPI/System/Network/UPnP/ports/status
-    #   Currently user can get information about , `http` , `rtsp`, `https` ports
+    """
+    Get the Ports using the endpoint : /ISAPI/System/Network/UPnP/ports/status
+    """
+    #TODO : This needs to be implemented
     def get_upnp_ports_status(self):
         """
         Parse the upnp port status into dictionary
@@ -591,17 +597,11 @@ class HikCamera(object):
             _LOGGING.debug('Unable to fetch upnp ports')
             return None
         try:
-            soup = BeautifulSoup(response.text, 'lxml')
-            soup.prettify()
-            portstatus = soup.find_all('portstatus')
+            tree = ET.fromstring(response.text)
             #   Parse portstatus
-            for t in portstatus:
-                if t.internalport.text == "http":
-                    upnp_port['httpPort'] =  t.externalport.text
-                if t.internalport.text == "rtsp":
-                    upnp_port['rtspPort'] = t.externalport.text
-                if t.internalport.text == 'https':
-                    upnp_port['httpsPort'] = t.externalport.text
+            upnp_port['httpPort'] =  tree[3][0][3].text.strip()
+            upnp_port['rtspPort'] = tree[3][2][3].text.strip()
+            upnp_port['httpsPort'] = tree[3][3][3].text.strip()
 
             return upnp_port
         except AttributeError as err:
