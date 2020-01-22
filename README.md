@@ -21,7 +21,7 @@ If internal callback methods are used no external libraries are required, otherw
 ```python
 import pyhik.hikvision
 
-camera = pyhik.hikvision.HikCamera('http://X.X.X.X', port=80, user='admin', pass='1234')
+camera = pyhik.hikvision.HikCamera('http://X.X.X.X', port=80, usr='admin', pwd='1234')
 ```
 
 # Available Methods
