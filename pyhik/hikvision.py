@@ -242,7 +242,6 @@ class HikCamera(object):
         device_info = self.get_device_info()
 
         if device_info is None:
-            print('Hello this is it')
             self.name = None
             self.cam_id = None
             self.event_states = None
@@ -402,7 +401,6 @@ class HikCamera(object):
         except (requests.exceptions.RequestException,
                 requests.exceptions.ConnectionError) as err:
             _LOGGING.error('Unable to fetch deviceInfo, error: %s', err)
-            print('This is test')
             return None
 
         if response.status_code == requests.codes.unauthorized:
@@ -431,11 +429,6 @@ class HikCamera(object):
             _LOGGING.error('Entire response: %s', response.text)
             _LOGGING.error('There was a problem: %s', err)
             return None
-
-    """
-    This function is added by Ayush Pratap Singh (ayushs56@gmail.com)
-    This function is used to get the status of the device
-    """
 
     def get_device_status(self):
         """Parse deviceInfo into dictionary."""
@@ -551,10 +544,6 @@ class HikCamera(object):
             _LOGGING.error('Entire response: %s', response.text)
             _LOGGING.error('There was a problem: %s', err)
 
-    """
-    Get the Ports using the endpoint : /ISAPI/System/Network/UPnP/ports/status
-    """
-    #TODO : This needs to be implemented
     def get_upnp_ports_status(self):
         """
         Parse the upnp port status into dictionary
