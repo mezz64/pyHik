@@ -430,6 +430,173 @@ class HikCamera(object):
             _LOGGING.error('There was a problem: %s', err)
             return None
 
+    def get_device_status(self):
+        """Parse deviceInfo into dictionary."""
+        device_status = {}
+        url = '%s/ISAPI/System/status' % self.root_url
+        using_digest = False
+
+        try:
+            response = self.hik_request.get(url, timeout=CONNECT_TIMEOUT)
+            if response.status_code == requests.codes.unauthorized:
+                _LOGGING.debug('Basic authentication failed. Using digest.')
+                self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
+                using_digest = True
+                response = self.hik_request.get(url)
+
+            if response.status_code == requests.codes.not_found:
+                # Try alternate URL for deviceInfo
+                _LOGGING.debug('Using alternate deviceInfo URL.')
+                url = '%s/System/status' % self.root_url
+                response = self.hik_request.get(url)
+                # Seems to be difference between camera and nvr, they can't seem to
+                # agree if they should 404 or 401 first
+                if not using_digest and response.status_code == requests.codes.unauthorized:
+                    _LOGGING.debug('Basic authentication failed. Using digest.')
+                    self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
+                    using_digest = True
+                    response = self.hik_request.get(url)
+
+        except (requests.exceptions.RequestException,
+                requests.exceptions.ConnectionError) as err:
+            _LOGGING.error('Unable to fetch status of device, error: %s', err)
+            return None
+
+        if response.status_code == requests.codes.unauthorized:
+            _LOGGING.error('Authentication failed')
+            return None
+
+        if response.status_code != requests.codes.ok:
+            # If we didn't receive 200, abort
+            _LOGGING.debug('Unable to fetch status of device.')
+            return None
+
+        try:
+            tree = ET.fromstring(response.text)
+
+            device_status['currentdevicetime'] = tree[0].text.strip()
+            device_status['deviceuptime'] = tree[1].text.strip()
+            device_status['cpudescription'] = tree[2][0][0].text.strip()
+            device_status['cpuutilization'] = tree[2][0][1].text.strip()
+            device_status['memorydescription'] = tree[3][0][0].text.strip()
+            device_status['memoryusage'] = tree[3][0][1].text.strip()
+            device_status['memoryavailable'] = tree[3][0][2].text.strip()
+
+            return device_status
+
+        except AttributeError as err:
+            _LOGGING.error('Entire response: %s', response.text)
+            _LOGGING.error('There was a problem: %s', err)
+            return None
+
+    def get_device_time(self):
+        """
+        Parse device time into dictionary
+        """
+        device_time = {}
+        url = "%s/ISAPI/System/time" % self.root_url
+        using_digest = False
+
+        try:
+            response = self.hik_request.get(url, timeout=CONNECT_TIMEOUT)
+            if response.status_code == requests.codes.unauthorized:
+                _LOGGING.debug('Basic authentication failed. Using digest.')
+                self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
+                using_digest = True
+                response = self.hik_request.get(url)
+
+            if response.status_code == requests.codes.not_found:
+                """
+                Tyr alternate URL for time from device
+                """
+                _LOGGING.debug('Using alternate URL for device from time')
+                url = '%s/System/time' % self.root_url
+                response = self.hik_request.get(url)
+
+                if not using_digest and response.status_code == requests.codes.unauthorized:
+                    _LOGGING.debug('Basic authentication failed. Using digest.')
+                    self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
+                    using_digest = True
+                    response = self.hik_request.get(url)
+
+        except (requests.exceptions.RequestException, requests.exceptions.ConnectionError) as err:
+            _LOGGING.error('Unable to fetch time of device, error: %s', err)
+            return None
+
+        if response.status_code == requests.codes.unauthorized:
+            _LOGGING.error('Authentication failed')
+            return None
+
+        if response.status_code != requests.codes.ok:
+            # If we didn't receive 200, abort
+            _LOGGING.debug('Unable to fetch time of device')
+            return None
+        try:
+            tree = ET.fromstring(response.text)
+
+            device_time['timemode'] = tree[0].text.strip()
+            device_time['localtime'] = tree[1].text.strip()
+            device_time['timezone'] = tree[2].text.strip()
+
+            return device_time
+
+        except AttributeError as err:
+            _LOGGING.error('Entire response: %s', response.text)
+            _LOGGING.error('There was a problem: %s', err)
+
+    def get_upnp_ports_status(self):
+        """
+        Parse the upnp port status into dictionary
+        """
+        upnp_port = {}
+        url = "%s/ISAPI/System/Network/UPnP/ports/status" % self.root_url
+        using_digest = False
+
+        try:
+            response = self.hik_request.get(url, timeout=CONNECT_TIMEOUT)
+            if response.status_code == requests.codes.unauthorized:
+                _LOGGING.debug('basic authentication failed. Using digest.')
+                self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
+                using_digest = True
+                response = self.hik_request.get(url)
+
+            if response.status_code == requests.codes.not_found:
+                """
+                Try alternate URL
+                """
+                _LOGGING.debug('Using alternate URL for Upnp ports')
+                url = '%s/System/time' % self.root_url
+                response = self.hik_request.get(url)
+
+                if not using_digest and response.status_code == requests.codes.unauthorized:
+                    _LOGGING.debug('Basic authentication failed. Using digest')
+                    self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
+                    using_digest = True
+                    response = self.hik_request.get(url)
+        except (requests.exceptions.RequestException, requests.exceptions.ConnectionError) as err:
+            _LOGGING.error('Unable to fetch upnp ports, error: %s', err)
+            return None
+
+        if response.status_code == requests.codes.unauthorized:
+            _LOGGING.error('Authentication failed')
+            return None
+
+        if response.status_code != requests.codes.ok:
+            #   If we didn't receive 200, abort
+            _LOGGING.debug('Unable to fetch upnp ports')
+            return None
+        try:
+            tree = ET.fromstring(response.text)
+            #   Parse portstatus
+            upnp_port['httpPort'] =  tree[3][0][3].text.strip()
+            upnp_port['rtspPort'] = tree[3][2][3].text.strip()
+            upnp_port['httpsPort'] = tree[3][3][3].text.strip()
+
+            return upnp_port
+        except AttributeError as err:
+            _LOGGING.error('Entire response: %s', response.text)
+            _LOGGING.error('There was a problem: %s', err)
+
     def watchdog_handler(self):
         """Take care of threads if wachdog expires."""
         _LOGGING.debug('%s Watchdog expired. Resetting connection.', self.name)
