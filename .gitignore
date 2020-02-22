@@ -68,3 +68,6 @@ target/
 bin/
 local/
 share/
+
+# IDE
+.vscode
