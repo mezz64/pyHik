@@ -31,6 +31,7 @@ SENSOR_MAP = {
     'videoloss': 'Video Loss',
     'tamperdetection': 'Tamper Detection',
     'shelteralarm': 'Tamper Detection',
+    'defocus':'Tamper Detection',
     'diskfull': 'Disk Full',
     'diskerror': 'Disk Error',
     'nicbroken': 'Net Interface Broken',

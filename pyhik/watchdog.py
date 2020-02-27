@@ -16,6 +16,7 @@ class Watchdog(object):
         """ Initialize watchdog variables. """
         self.time = timeout
         self.handler = handler
+        self._timer = None
         return
 
     def start(self):
@@ -33,4 +34,5 @@ class Watchdog(object):
 
     def stop(self):
         """ Stops the watchdog timer. """
-        self._timer.cancel()
+        if self._timer is not None:
+            self._timer.cancel()
