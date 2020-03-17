@@ -345,15 +345,14 @@ class HikCamera(object):
 
                 if etnotify:
                     for notifytrigger in etnotify:
-                        ntype = notifytrigger.find(
-                            self.element_query('notificationMethod'))
-                        if ntype.text == 'center' or ntype.text == 'HTTP':
-                            """
-                            If we got this far we found an event that we want
-                            to track.
-                            """
-                            events.setdefault(ettype.text, []) \
-                                .append(etchannel_num)
+                        ntype = notifytrigger.find(self.element_query('notificationMethod'))
+
+                        # if ntype.text == 'center' or ntype.text == 'HTTP':
+                        """
+                        If we got this far we found an event that we want
+                        to track.
+                        """
+                        events.setdefault(ettype.text, []).append(etchannel_num)
 
         except (AttributeError, ET.ParseError) as err:
             _LOGGING.error(
