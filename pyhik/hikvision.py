@@ -309,6 +309,13 @@ class HikCamera(object):
         try:
             content = ET.fromstring(response.text)
 
+            # some devices use a different sub-namespace for event triggers
+            # check that here and redefine namespace if needed
+            nmsp = content[0][1].tag.split('}')[0].strip('{')
+            if nmsp.find('mmmm') != -1:
+                self.namespace = nmsp
+                _LOGGING.debug('Updating Namespace: %s', self.namespace)
+
             if content[0].find(self.element_query('EventTrigger')):
                 event_xml = content[0].findall(
                     self.element_query('EventTrigger'))
