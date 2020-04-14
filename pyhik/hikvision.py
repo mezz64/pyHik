@@ -81,6 +81,7 @@ class HikCamera(object):
         self.watchdog = Watchdog(300.0, self.watchdog_handler)
 
         self.namespace = XML_NAMESPACE
+        self.temp_namespace = None
 
         if not host:
             _LOGGING.error('Host not specified! Cannot continue.')
@@ -309,6 +310,14 @@ class HikCamera(object):
         try:
             content = ET.fromstring(response.text)
 
+            # some devices use a different sub-namespace for event triggers
+            # check that here and use if needed
+            nmsp = content[0][1].tag.split('}')[0].strip('{')
+            if nmsp.find('mmmm') != -1:
+                self.temp_namespace = self.namespace
+                self.namespace = nmsp
+                _LOGGING.debug('Changing Namespace: %s', self.namespace)
+
             if content[0].find(self.element_query('EventTrigger')):
                 event_xml = content[0].findall(
                     self.element_query('EventTrigger'))
@@ -369,6 +378,12 @@ class HikCamera(object):
 
         _LOGGING.debug('Found events: %s', events)
         self.hik_request.close()
+
+        # Change back namespace if needed
+        if self.temp_namespace is not None:
+            self.namespace = self.temp_namespace
+            _LOGGING.debug('Changing Namespace: %s', self.namespace)
+
         return events
 
     def get_device_info(self):
