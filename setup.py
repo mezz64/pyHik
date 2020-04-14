@@ -16,7 +16,7 @@ from distutils.core import setup
 setup(
     name='pyHik',
     packages=['pyhik'],
-    version='0.2.6'
+    version='0.2.7',
     description='Provides a python api to interact with a Hikvision camera event stream and toggle motion detection.',
     author='John Mihalic',
     author_email='mezz64@users.noreply.github.com',
