@@ -8,7 +8,7 @@ Licensed under the MIT license.
 
 MAJOR_VERSION = 0
 MINOR_VERSION = 2
-SUB_MINOR_VERSION = 5
+SUB_MINOR_VERSION = 6
 __version__ = '{}.{}.{}'.format(
     MAJOR_VERSION, MINOR_VERSION, SUB_MINOR_VERSION)
 
@@ -31,7 +31,7 @@ SENSOR_MAP = {
     'videoloss': 'Video Loss',
     'tamperdetection': 'Tamper Detection',
     'shelteralarm': 'Tamper Detection',
-    'defocus':'Tamper Detection',
+    'defocus': 'Tamper Detection',
     'diskfull': 'Disk Full',
     'diskerror': 'Disk Error',
     'nicbroken': 'Net Interface Broken',
