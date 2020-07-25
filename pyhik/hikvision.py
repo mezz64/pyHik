@@ -277,7 +277,7 @@ class HikCamera(object):
 
         self.get_motion_detection()
 
-    def get_event_triggers(self):
+    def get_event_triggers(self, base_url="default"):
         """
         Returns dict of supported events.
         Key = Event Type
@@ -287,15 +287,17 @@ class HikCamera(object):
         nvrflag = False
         event_xml = []
 
-        url = '%s/ISAPI/Event/triggers' % self.root_url
+        if base_url == "default":
+            url = '%s/ISAPI/Event/triggers' % self.root_url
+        else:
+            url = '%s/Event/triggers' % self.root_url
 
         try:
             response = self.hik_request.get(url, timeout=CONNECT_TIMEOUT)
             if response.status_code == requests.codes.not_found:
                 # Try alternate URL for triggers
-                _LOGGING.debug('Using alternate triggers URL.')
-                url = '%s/Event/triggers' % self.root_url
-                response = self.hik_request.get(url)
+                _LOGGING.debug('Trying alternate triggers URL.')
+                return self.get_event_triggers("alt")
 
         except (requests.exceptions.RequestException,
                 requests.exceptions.ConnectionError) as err:
@@ -317,6 +319,12 @@ class HikCamera(object):
                 self.temp_namespace = self.namespace
                 self.namespace = nmsp
                 _LOGGING.debug('Changing Namespace: %s', self.namespace)
+
+            # New cams return valid xml on invalid endpoints, check and
+            # rerun with diffent url if true
+            if content[0].find(self.element_query('statusCode')):
+                _LOGGING.debug('Trying alternate triggers URL.')
+                return self.get_event_triggers("alt")
 
             if content[0].find(self.element_query('EventTrigger')):
                 event_xml = content[0].findall(
