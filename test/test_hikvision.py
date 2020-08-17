@@ -6,6 +6,7 @@ import unittest
 
 from unittest.mock import MagicMock, patch, PropertyMock
 from pyhik.hikvision import HikCamera
+from pyhik.constants import (CONNECT_TIMEOUT)
 
 XML = """<MotionDetection xmlns="http://www.hikvision.com/ver20/XMLSchema" version="2.0">
     <enabled>{}</enabled>
@@ -44,6 +45,7 @@ class HikvisionTestCase(unittest.TestCase):
     @patch("pyhik.hikvision.HikCamera.get_device_info")
     @patch("pyhik.hikvision.HikCamera.get_event_triggers")
     def test_motion_detection(self, *args):
+
         session = args[-1].return_value
         get = session.get
         url = "localhost:80/ISAPI/System/Video/inputs/channels/1/motionDetection"
@@ -51,7 +53,7 @@ class HikvisionTestCase(unittest.TestCase):
         # Motion detection disabled
         self.set_motion_detection_state(get, False)
         device = HikCamera(host="localhost")
-        get.assert_called_once_with(url)
+        get.assert_called_once_with(url, timeout=CONNECT_TIMEOUT)
         self.assertIsNotNone(device)
         self.assertFalse(device.current_motion_detection_state)
 
@@ -65,10 +67,10 @@ class HikvisionTestCase(unittest.TestCase):
         self.set_motion_detection_state(get, True)
         session.put.return_value = MagicMock(status_code=requests.codes.ok, ok=True)
         device.enable_motion_detection()
-        session.put.assert_called_once_with(url, data=XML.format("true").encode())
+        session.put.assert_called_once_with(url, data=XML.format("true").encode(), timeout=CONNECT_TIMEOUT)
 
         # Disable
-        def change_get_response(url, data):
+        def change_get_response(url, data,timeout):
             self.set_motion_detection_state(get, False)
             return MagicMock(ok=True, status_code=requests.codes.ok)
 
