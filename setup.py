@@ -20,6 +20,7 @@ setup(
     description='Provides a python api to interact with a Hikvision camera event stream and toggle motion detection.',
     author='John Mihalic',
     author_email='mezz64@users.noreply.github.com',
+    license='MIT',
     url='https://github.com/mezz64/pyhik',
     download_url='https://github.com/mezz64/pyhik/tarball/0.2.7',
     keywords=['hik', 'hikvision', 'event stream', 'events', 'api wrapper', 'homeassistant'],
