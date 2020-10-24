@@ -250,8 +250,12 @@ class HikCamera(object):
             self.namespace[CONTEXT_INFO] = nmsp if nmsp.startswith('http') else XML_NAMESPACE
             _LOGGING.debug('Device info namespace: %s', self.namespace[CONTEXT_INFO])
         elif context == CONTEXT_TRIG:
-            # For triggers we only care about the sub-namespace
-            nmsp = tree[0][1].tag.split('}')[0].strip('{')
+            try:
+                # For triggers we *typically* only care about the sub-namespace
+                nmsp = tree[0][1].tag.split('}')[0].strip('{')
+            except IndexError:
+                # If get a index error check on top level
+                nmsp = tree.tag.split('}')[0].strip('{')
             self.namespace[CONTEXT_TRIG] = nmsp if nmsp.startswith('http') else XML_NAMESPACE
             _LOGGING.debug('Device triggers namespace: %s', self.namespace[CONTEXT_TRIG])
         elif context == CONTEXT_ALERT:
