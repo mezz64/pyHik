@@ -382,7 +382,7 @@ class HikCamera(object):
 
         try:
             response = self.hik_request.get(url, timeout=CONNECT_TIMEOUT)
-            if response.status_code == requests.codes.not_found:
+            if response.status_code != requests.codes.ok:
                 # Try alternate URL for triggers
                 _LOGGING.debug('Trying alternate triggers URL.')
                 return self.get_event_triggers("alt")
