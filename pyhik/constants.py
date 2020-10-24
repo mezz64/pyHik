@@ -2,7 +2,7 @@
 pyhik.constants
 ~~~~~~~~~~~~~~~~~~~~
 Constants list
-Copyright (c) 2016-2019 John Mihalic <https://github.com/mezz64>
+Copyright (c) 2016-2020 John Mihalic <https://github.com/mezz64>
 Licensed under the MIT license.
 """
 
@@ -50,5 +50,18 @@ SENSOR_MAP = {
     'regionentrance': "Entering Region"
 }
 
+# The name 'id' should always be last
+CHANNEL_NAMES = ['dynVideoInputChannelID', 'videoInputChannelID',
+                 'dynInputIOPortID', 'inputIOPortID',
+                 'id']
+
+ID_TYPES = ['channelID', 'dynChannelID', 'inputIOPortID',
+            'dynInputIOPortID']
+
 CAM_DEVICE = 'CAM'
 NVR_DEVICE = 'NVR'
+
+CONTEXT_INFO = 'INFO'
+CONTEXT_TRIG = 'TRIGGERS'
+CONTEXT_ALERT = 'ALERTS'
+CONTEXT_MOTION = 'MOTION'
