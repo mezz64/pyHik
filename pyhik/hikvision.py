@@ -168,10 +168,6 @@ class HikCamera(object):
 
         try:
             tree = ET.fromstring(response.text)
-            nmsp = tree.tag.split('}')[0].strip('{')
-            self.namespace = nmsp if nmsp.startswith('http') else XML_NAMESPACE
-            _LOGGING.debug('Using Namespace: %s', self.namespace)
-
             ET.register_namespace("", self.namespace)
             enabled = tree.find(self.element_query('enabled'))
 
