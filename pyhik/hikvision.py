@@ -250,12 +250,14 @@ class HikCamera(object):
             self.namespace[CONTEXT_INFO] = nmsp if nmsp.startswith('http') else XML_NAMESPACE
             _LOGGING.debug('Device info namespace: %s', self.namespace[CONTEXT_INFO])
         elif context == CONTEXT_TRIG:
+            _LOGGING.debug('TRIGGERS - Fetching namespace...')
             try:
                 # For triggers we *typically* only care about the sub-namespace
                 nmsp = tree[0][1].tag.split('}')[0].strip('{')
             except IndexError:
                 # If get a index error check on top level
                 nmsp = tree.tag.split('}')[0].strip('{')
+            _LOGGING.debug('TRIGGERS - Namespace found: %s', nmsp)
             self.namespace[CONTEXT_TRIG] = nmsp if nmsp.startswith('http') else XML_NAMESPACE
             _LOGGING.debug('Device triggers namespace: %s', self.namespace[CONTEXT_TRIG])
         elif context == CONTEXT_ALERT:
@@ -371,6 +373,7 @@ class HikCamera(object):
         events = {}
         nvrflag = False
         event_xml = []
+        _LOGGING.debug('TRIGGERS - Starting to look...')
 
         if base_url == "default":
             url = '%s/ISAPI/Event/triggers' % self.root_url
@@ -388,11 +391,12 @@ class HikCamera(object):
                 requests.exceptions.ConnectionError) as err:
             _LOGGING.error('Unable to fetch events, error: %s', err)
             return None
+        _LOGGING.debug('TRIGGERS - First request completed')
 
         if response.status_code != 200:
             # If we didn't recieve 200, abort
             return None
-
+        _LOGGING.debug('TRIGGERS - Processing XML...')
         # pylint: disable=too-many-nested-blocks
         try:
             content = ET.fromstring(response.text)
