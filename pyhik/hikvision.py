@@ -456,7 +456,7 @@ class HikCamera(object):
                 elem = xml.find(self.element_query(k))
                 if elem is None:
                     _LOGGING.error("Couldn't find '%s' in the xml" % k)
-                    _LOGGING.error('XML: %s', ET.tostring(ET.tostring(xml)))
+                    _LOGGING.error('XML: %s', ET.tostring(xml))
                 else:
                     elem.text = v
             payload = ET.tostring(xml)
