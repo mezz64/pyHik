@@ -445,6 +445,76 @@ class HikCamera(object):
             _LOGGING.error('There was a problem: %s', err)
             return None
 
+    def call_service(self, isapi_path, method='GET', payload=None, xml_result=False, **kwargs):
+        """Call any service"""
+        result = {}
+        url = '%s/ISAPI%s' % ( self.root_url, isapi_path)
+        if method != 'GET' and payload is None and kwargs:
+            xml = self.call_service(isapi_path, method='GET', xml_result=True)
+            ET.register_namespace("", self.namespace)
+            for k, v in kwargs.items():
+                elem = xml.find(self.element_query(k))
+                if elem is None:
+                    _LOGGING.error("Couldn't find '%s' in the xml" % k)
+                    _LOGGING.error('XML: %s', ET.tostring(ET.tostring(xml)))
+                else:
+                    elem.text = v
+            payload = ET.tostring(xml)
+
+        try:
+            request_func = getattr(self.hik_request, method.lower())
+            response = request_func(url, data=payload, timeout=CONNECT_TIMEOUT)
+            if response.status_code == requests.codes.unauthorized:
+                _LOGGING.debug('Basic authentication failed. Using digest.')
+                self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
+                response = request_func(url, data=payload, timeout=CONNECT_TIMEOUT)
+
+        except (requests.exceptions.RequestException,
+                requests.exceptions.ConnectionError) as err:
+            _LOGGING.error('Unable to %s service %s error: %s', method, isapi_path, err)
+            return None
+
+        if response.status_code == requests.codes.unauthorized:
+            _LOGGING.error('Authentication failed')
+            return None
+
+        if response.status_code != requests.codes.ok:
+            # If we didn't receive 200, abort
+            _LOGGING.debug('Unable to %s services %s, code %s.', method, isapi_path, response.status_code)
+            return None
+
+        try:
+            tree = ET.fromstring(response.text)
+            # Try to fetch namespace from XML
+            nmsp = tree.tag.split('}')[0].strip('{')
+            self.namespace = nmsp if nmsp.startswith('http') else XML_NAMESPACE
+            _LOGGING.debug('Using Namespace: %s', self.namespace)
+
+            if xml_result:
+                result = tree
+            else:
+                for item in tree:
+                    tag = item.tag.split('}')[1]
+                    result[tag] = item.text
+
+            return result
+
+        except AttributeError as err:
+            _LOGGING.error('Entire response: %s', response.text)
+            _LOGGING.error('There was a problem: %s', err)
+            return None
+
+    def get_ircut(self, channel=1):
+        result = self.call_service('/Image/channels/%s/ircutFilter' % channel)
+        return result
+
+    def set_ircut(self, channel=1, filterType='auto',nightToDayLevel=6, nightToDayTime=20):
+        result = self.call_service('/Image/channels/%s/ircutFilter' % channel, method='PUT',
+                IrcutFilterType=filterType, 
+                nightToDayFilterLevel=str(nightToDayLevel), 
+                nightToDayFilterTime=str(nightToDayTime))
+        return result
+
     def watchdog_handler(self):
         """Take care of threads if wachdog expires."""
         _LOGGING.debug('%s Watchdog expired. Resetting connection.', self.name)
@@ -512,7 +582,7 @@ class HikCamera(object):
                                     self.process_stream(tree)
                                     self.update_stale()
                                 except ET.ParseError as err:
-                                    _LOGGING.warning('XML parse error in stream.')
+                                    _LOGGING.warning('XML parse error in stream: %s',err)
                                 parse_string = ""
                         else:
                             if start_event:
@@ -566,7 +636,7 @@ class HikCamera(object):
                         # Need to make sure this is actually a number
                         echid = int(echid.text)
                         break
-                    except (ValueError, TypeError) as err:
+                    except (ValueError, TypeError) as _err:
                         # Field must not be an integer or is blank
                         pass
 
