@@ -62,7 +62,7 @@ class HikCamera(object):
     """Creates a new Hikvision api device."""
 
     def __init__(self, host=None, port=DEFAULT_PORT,
-                 usr=None, pwd=None):
+                 usr=None, pwd=None, verify_ssl=True):
         """Initialize device."""
 
         _LOGGING.debug("pyHik %s initializing new hikvision device at: %s",
@@ -98,6 +98,9 @@ class HikCamera(object):
         # Default to basic authentication. It will change to digest inside
         # get_device_info if basic fails
         self.hik_request = requests.Session()
+
+        self.hik_request.verify = verify_ssl
+
         self.hik_request.auth = (usr, pwd)
         self.hik_request.headers.update(DEFAULT_HEADERS)
 
