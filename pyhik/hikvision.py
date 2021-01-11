@@ -42,7 +42,6 @@ from pyhik.constants import (
 
 _LOGGING = logging.getLogger(__name__)
 
-
 # Hide nuisance requests logging
 logging.getLogger('urllib3').setLevel(logging.ERROR)
 
@@ -362,7 +361,7 @@ class HikCamera(object):
             _LOGGING.error('There was a problem: %s', err)
             return None
 
-    def get_event_triggers(self, base_url="default"):
+    def get_event_triggers(self):
         """
         Returns dict of supported events.
         Key = Event Type
@@ -372,25 +371,29 @@ class HikCamera(object):
         nvrflag = False
         event_xml = []
 
-        if base_url == "default":
-            url = '%s/ISAPI/Event/triggers' % self.root_url
+        # different firmware versions support different endpoints.
+        urls = (
+            '%s/ISAPI/Event/triggers',    # ISAPI v2.0+
+            '%s/Event/triggers',          # Old devices?
+        )
+        response = {}
+
+        for url in urls:
+            try:
+                response = self.hik_request.get(url % self.root_url, timeout=CONNECT_TIMEOUT)
+                if response.status_code != requests.codes.ok:
+                    # Try next alternate URL for triggers
+                    _LOGGING.debug('Trying alternate triggers URL.')
+                    continue
+
+            except (requests.exceptions.RequestException,
+                    requests.exceptions.ConnectionError) as err:
+                _LOGGING.error('Unable to fetch events, error: %s', err)
+                return None
+            break
         else:
-            url = '%s/Event/triggers' % self.root_url
-
-        try:
-            response = self.hik_request.get(url, timeout=CONNECT_TIMEOUT)
-            if response.status_code != requests.codes.ok:
-                # Try alternate URL for triggers
-                _LOGGING.debug('Trying alternate triggers URL.')
-                return self.get_event_triggers("alt")
-
-        except (requests.exceptions.RequestException,
-                requests.exceptions.ConnectionError) as err:
-            _LOGGING.error('Unable to fetch events, error: %s', err)
-            return None
-
-        if response.status_code != 200:
-            # If we didn't recieve 200, abort
+            _LOGGING.error('Unable to fetch events. '
+                           'Device firmware may be old/bad.')
             return None
 
         # pylint: disable=too-many-nested-blocks
