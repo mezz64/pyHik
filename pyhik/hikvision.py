@@ -2,7 +2,7 @@
 pyhik.hikvision
 ~~~~~~~~~~~~~~~~~~~~
 Provides api for Hikvision events
-Copyright (c) 2016-2020 John Mihalic <https://github.com/mezz64>
+Copyright (c) 2016-2021 John Mihalic <https://github.com/mezz64>
 Licensed under the MIT license.
 
 Based on the following api documentation:
