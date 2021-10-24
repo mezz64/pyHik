@@ -47,7 +47,8 @@ SENSOR_MAP = {
     'attendedbaggage': 'Attended Baggage',
     'recordingfailure': 'Recording Failure',
     'regionexiting': "Exiting Region",
-    'regionentrance': "Entering Region"
+    'regionentrance': "Entering Region",
+    'duration': "Ongoing Events"
 }
 
 # The name 'id' should always be last
