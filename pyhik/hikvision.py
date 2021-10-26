@@ -581,6 +581,11 @@ class HikCamera(object):
         try:
             etype = SENSOR_MAP[tree.find(
                 self.element_query('eventType', CONTEXT_ALERT)).text.lower()]
+            
+            # Since this pasing is different and not really usefull for now, just return without error.
+            if len(etype) > 0 and etype == 'Ongoing Events':
+                return
+            
             estate = tree.find(
                 self.element_query('eventState', CONTEXT_ALERT)).text
 
