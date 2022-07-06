@@ -492,6 +492,8 @@ class HikCamera(object):
         start_event = False
         parse_string = ""
         fail_count = 0
+        line = ""
+        buffer = b""
 
         url = '%s/ISAPI/Event/notification/alertStream' % self.root_url
 
@@ -514,8 +516,12 @@ class HikCamera(object):
                     fail_count = 0
                     self.watchdog.start()
 
-                for line in stream.iter_lines():
+                for chunk in stream.iter_content(chunk_size=1):
                     # _LOGGING.debug('Processing line from %s', self.name)
+                    buffer += chunk
+                    if chunk == b"\n":
+                        line = buffer
+                        buffer = b""
                     # filter out keep-alive new lines
                     if line:
                         str_line = line.decode("utf-8", "ignore")
@@ -539,6 +545,7 @@ class HikCamera(object):
                         else:
                             if start_event:
                                 parse_string += str_line
+                        line = ""
 
                     if kill_event.is_set():
                         # We were asked to stop the thread so lets do so.
