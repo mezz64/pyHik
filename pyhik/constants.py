@@ -2,7 +2,7 @@
 pyhik.constants
 ~~~~~~~~~~~~~~~~~~~~
 Constants list
-Copyright (c) 2016-2021 John Mihalic <https://github.com/mezz64>
+Copyright (c) 2016-2022 John Mihalic <https://github.com/mezz64>
 Licensed under the MIT license.
 """
 
@@ -41,6 +41,9 @@ SENSOR_MAP = {
     'badvideo': 'Bad Video',
     'pir': 'PIR Alarm',
     'facedetection': 'Face Detection',
+    'faceSnap': 'Face Capture',
+    'faceContrast': 'Face Contrast',
+    'faceContrastSuccess': 'Face Contrast Success',
     'scenechangedetection': 'Scene Change Detection',
     'io': 'I/O',
     'unattendedbaggage': 'Unattended Baggage',
