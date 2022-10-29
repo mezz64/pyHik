@@ -8,7 +8,7 @@ Licensed under the MIT license.
 
 MAJOR_VERSION = 0
 MINOR_VERSION = 3
-SUB_MINOR_VERSION = 0
+SUB_MINOR_VERSION = 1
 __version__ = '{}.{}.{}'.format(
     MAJOR_VERSION, MINOR_VERSION, SUB_MINOR_VERSION)
 
@@ -28,7 +28,6 @@ SENSOR_MAP = {
     'vmd': 'Motion',
     'linedetection': 'Line Crossing',
     'fielddetection': 'Field Detection',
-    'videoloss': 'Video Loss',
     'tamperdetection': 'Tamper Detection',
     'shelteralarm': 'Tamper Detection',
     'defocus': 'Tamper Detection',
