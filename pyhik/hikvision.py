@@ -292,15 +292,16 @@ class HikCamera(object):
         if events_available:
             for event, channel_list in events_available.items():
                 for channel in channel_list:
-                    try:
-                        self.event_states.setdefault(
-                            SENSOR_MAP[event.lower()], []).append(
-                                [False, channel, 0, datetime.datetime.now()])
-                    except KeyError:
-                        # Sensor type doesn't have a known friendly name
-                        # We can't reliably handle it at this time...
-                        _LOGGING.warning(
-                            'Sensor type "%s" is unsupported.', event)
+                    for region in channel[1]:
+                        try:
+                            self.event_states.setdefault(
+                                SENSOR_MAP[event.lower()], []).append(
+                                    [False, channel[0], 0, datetime.datetime.now(), region])
+                        except KeyError:
+                            # Sensor type doesn't have a known friendly name
+                            # We can't reliably handle it at this time...
+                            _LOGGING.warning(
+                                'Sensor type "%s" is unsupported.', event)
 
             _LOGGING.debug('Initialized Dictionary: %s', self.event_states)
         else:
@@ -447,8 +448,18 @@ class HikCamera(object):
                             If we got this far we found an event that we want
                             to track.
                             """
+                            available_regions = [ 1 ]
+                            if (ettype.text.lower() == "vmd"):
+                                try:
+                                    response = self.hik_request.get("%s/ISAPI/System/Video/inputs/channels/%i/motionDetectionExt" % (self.root_url, etchannel_num), timeout=CONNECT_TIMEOUT)
+                                    motionDetectionExt_content = ET.fromstring(response.text)
+                                    if (motionDetectionExt_content.find("{http://www.hikvision.com/ver20/XMLSchema}activeMode").text):
+                                        motion_detection_region_list = motionDetectionExt_content.find(self.element_query( "MotionDetectionRegionList", CONTEXT_TRIG))
+                                        available_regions = list(range(1, len(motion_detection_region_list) + 1))
+                                except:
+                                    pass
                             events.setdefault(ettype.text, []) \
-                                .append(etchannel_num)
+                                .append((etchannel_num,  available_regions))
 
         except (AttributeError, ET.ParseError) as err:
             _LOGGING.error(
@@ -578,6 +589,7 @@ class HikCamera(object):
         if not self.namespace[CONTEXT_ALERT]:
             self.fetch_namespace(tree, CONTEXT_ALERT)
 
+        regions = []
         try:
             etype = SENSOR_MAP[tree.find(
                 self.element_query('eventType', CONTEXT_ALERT)).text.lower()]
@@ -588,6 +600,14 @@ class HikCamera(object):
             
             estate = tree.find(
                 self.element_query('eventState', CONTEXT_ALERT)).text
+            
+            detection_region_list = tree.find(self.element_query('DetectionRegionList', CONTEXT_ALERT))
+            if (detection_region_list):         
+                region_entries_xml = detection_region_list.findall(self.element_query('DetectionRegionEntry', CONTEXT_ALERT))
+                for region_entry in region_entries_xml:                
+                    regions.append(int(region_entry.find(self.element_query("regionID", CONTEXT_ALERT)).text))
+            else:
+                regions = [1]
 
             for idtype in ID_TYPES:
                 echid = tree.find(self.element_query(idtype, CONTEXT_ALERT))
@@ -612,19 +632,21 @@ class HikCamera(object):
 
         # Track state if it's in the event list.
         if len(etype) > 0:
-            state = self.fetch_attributes(etype, echid)
-            if state:
-                # Determine if state has changed
-                # If so, publish, otherwise do nothing
-                estate = (estate == 'active')
-                old_state = state[0]
-                attr = [estate, echid, int(ecount),
-                        datetime.datetime.now()]
-                self.update_attributes(etype, echid, attr)
+            
+            for region in regions:
+                state = self.fetch_attributes(etype, echid, region)
+                if state:
+                    # Determine if state has changed
+                    # If so, publish, otherwise do nothing
+                    estate = (estate == 'active')
+                    old_state = state[0]
+                    attr = [estate, echid, int(ecount),
+                            datetime.datetime.now(), region]
+                    self.update_attributes(etype, echid, region, attr)
 
-                if estate != old_state:
-                    self.publish_changes(etype, echid)
-                self.watchdog.pet()
+                    if estate != old_state:
+                        self.publish_changes(etype, echid, region)
+                    self.watchdog.pet()
 
     def update_stale(self):
         """Update stale active statuses"""
@@ -638,38 +660,38 @@ class HikCamera(object):
                                 .total_seconds())
                     # print('Seconds since last update: {}'.format(sec_elap))
                     if sec_elap > 5 and eprop[0] is True:
-                        _LOGGING.debug('Updating stale event %s on CH(%s)',
-                                       etype, eprop[1])
+                        _LOGGING.debug('Updating stale event %s on CH(%s), Region(%s)',
+                                       etype, eprop[1], eprop[4])
                         attr = [False, eprop[1], eprop[2],
-                                datetime.datetime.now()]
-                        self.update_attributes(etype, eprop[1], attr)
-                        self.publish_changes(etype, eprop[1])
+                                datetime.datetime.now(), eprop[4]]
+                        self.update_attributes(etype, eprop[1], eprop[4], attr)
+                        self.publish_changes(etype, eprop[1], eprop[4])
 
-    def publish_changes(self, etype, echid):
+    def publish_changes(self, etype, echid, region):
         """Post updates for specified event type."""
         _LOGGING.debug('%s Update: %s, %s',
-                       self.name, etype, self.fetch_attributes(etype, echid))
+                       self.name, etype, self.fetch_attributes(etype, echid, region))
         signal = 'ValueChanged.{}'.format(self.cam_id)
-        sender = '{}.{}'.format(etype, echid)
+        sender = '{}.{}.{}'.format(etype, echid, region)
         if dispatcher:
             dispatcher.send(signal=signal, sender=sender)
 
-        self._do_update_callback('{}.{}.{}'.format(self.cam_id, etype, echid))
+        self._do_update_callback('{}.{}.{}.{}'.format(self.cam_id, etype, echid, region))
 
-    def fetch_attributes(self, event, channel):
+    def fetch_attributes(self, event, channel, region):
         """Returns attribute list for a given event/channel."""
         try:
             for sensor in self.event_states[event]:
-                if sensor[1] == int(channel):
+                if sensor[1] == int(channel) and sensor[4] == int(region):
                     return sensor
         except KeyError:
             return None
 
-    def update_attributes(self, event, channel, attr):
+    def update_attributes(self, event, channel, region, attr):
         """Update attribute list for current event/channel."""
         try:
             for i, sensor in enumerate(self.event_states[event]):
-                if sensor[1] == int(channel):
+                if sensor[1] == int(channel) and sensor[4] == int(region):
                     self.event_states[event][i] = attr
         except KeyError:
             _LOGGING.debug('Error updating attributes for: (%s, %s)',

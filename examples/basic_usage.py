@@ -3,6 +3,10 @@ Sample program for hikvision api.
 """
 
 import logging
+import sys
+# setting path
+sys.path.append('../')
+
 import pyhik.hikvision as hikvision
 
 logging.basicConfig(filename='out.log', filemode='w', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
@@ -29,16 +33,16 @@ class HikCamObject(object):
         print('NAME: {}'.format(self._name))
         print('ID: {}'.format(self._id))
         print('{}'.format(self._event_states))
-        print('Motion Dectect State: {}'.format(self.motion))
+        print('Motion Detect State: {}'.format(self.motion))
 
     @property
     def sensors(self):
         """Return list of available sensors and their states."""
         return self.cam.current_event_states
 
-    def get_attributes(self, sensor, channel):
+    def get_attributes(self, sensor, channel, region):
         """Return attribute list for sensor/channel."""
-        return self.cam.fetch_attributes(sensor, channel)
+        return self.cam.fetch_attributes(sensor, channel, region)
 
     def stop_hik(self):
         """Shutdown Hikvision subscriptions and subscription thread on exit."""
@@ -55,11 +59,12 @@ class HikCamObject(object):
 class HikSensor(object):
     """ Hik camera sensor."""
 
-    def __init__(self, sensor, channel, cam):
+    def __init__(self, sensor, channel, cam, region):
         """Init"""
         self._cam = cam
-        self._name = "{} {} {}".format(self._cam.cam.name, sensor, channel)
-        self._id = "{}.{}.{}".format(self._cam.cam.cam_id, sensor, channel)
+        self._name = "{} {} {} {}".format(self._cam.cam.name, sensor, channel, region)
+        self._id = "{}.{}.{}.{}".format(self._cam.cam.cam_id, sensor, channel, region)
+        self._region = region
         self._sensor = sensor
         self._channel = channel
 
@@ -67,11 +72,11 @@ class HikSensor(object):
 
     def _sensor_state(self):
         """Extract sensor state."""
-        return self._cam.get_attributes(self._sensor, self._channel)[0]
+        return self._cam.get_attributes(self._sensor, self._channel, self._region)[0]
 
     def _sensor_last_update(self):
         """Extract sensor last update time."""
-        return self._cam.get_attributes(self._sensor, self._channel)[3]
+        return self._cam.get_attributes(self._sensor, self._channel, self._region)[3]
 
     @property
     def name(self):
@@ -102,6 +107,6 @@ def main():
 
     for sensor, channel_list in cam.sensors.items():
         for channel in channel_list:
-            entities.append(HikSensor(sensor, channel[1], cam))
+            entities.append(HikSensor(sensor, channel[1], cam, channel[4]))
 
 main()
