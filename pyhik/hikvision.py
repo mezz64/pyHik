@@ -293,9 +293,12 @@ class HikCamera(object):
             for event, channel_list in events_available.items():
                 for channel in channel_list:
                     try:
-                        self.event_states.setdefault(
-                            SENSOR_MAP[event.lower()], []).append(
-                                [False, channel, 0, datetime.datetime.now()])
+                        # Tracking videoloss events causes problems since they are used
+                        # as the watchdog so ignore them if they are enabled in the triggers.
+                        if event.lower() != 'videoloss':
+                            self.event_states.setdefault(
+                                SENSOR_MAP[event.lower()], []).append(
+                                    [False, channel, 0, datetime.datetime.now()])
                     except KeyError:
                         # Sensor type doesn't have a known friendly name
                         # We can't reliably handle it at this time...
