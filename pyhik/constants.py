@@ -28,6 +28,7 @@ SENSOR_MAP = {
     'vmd': 'Motion',
     'linedetection': 'Line Crossing',
     'fielddetection': 'Field Detection',
+    'videoloss': 'Video Loss',
     'tamperdetection': 'Tamper Detection',
     'shelteralarm': 'Tamper Detection',
     'defocus': 'Tamper Detection',
