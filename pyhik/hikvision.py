@@ -437,7 +437,7 @@ class HikCamera(object):
                                 # Must be an nvr
                                 nvrflag = True
                             break
-                        except ValueError:
+                        except (ValueError, TypeError):
                             # Field must not be an integer
                             pass
 
@@ -450,6 +450,8 @@ class HikCamera(object):
                             If we got this far we found an event that we want
                             to track.
                             """
+                            # Catch events with bad IDs
+                            if etchannel_num == 0 : etchannel_num = 1
                             events.setdefault(ettype.text, []) \
                                 .append(etchannel_num)
 
