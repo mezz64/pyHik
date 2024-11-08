@@ -48,7 +48,8 @@ SENSOR_MAP = {
     'recordingfailure': 'Recording Failure',
     'regionexiting': "Exiting Region",
     'regionentrance': "Entering Region",
-    'duration': "Ongoing Events"
+    'duration': "Ongoing Events",
+    'thermometry': "Thermometry"
 }
 
 # The name 'id' should always be last
