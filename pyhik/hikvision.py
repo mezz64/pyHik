@@ -37,7 +37,7 @@ from pyhik.constants import (
     DEFAULT_PORT, DEFAULT_HEADERS, XML_NAMESPACE, SENSOR_MAP,
     CAM_DEVICE, NVR_DEVICE, CONNECT_TIMEOUT, READ_TIMEOUT, CONTEXT_INFO,
     CONTEXT_TRIG, CONTEXT_MOTION, CONTEXT_ALERT, CHANNEL_NAMES, ID_TYPES,
-    VALID_NOTIFICATION_METHODS, __version__)
+    __version__)
 
 
 _LOGGING = logging.getLogger(__name__)
@@ -367,12 +367,22 @@ class HikCamera(object):
             _LOGGING.error('There was a problem: %s', err)
             return None
 
-    def get_event_triggers(self):
+    def get_event_triggers(self, notification_methods=None):
         """
         Returns dict of supported events.
         Key = Event Type
         List = Channels that have that event activated
+
+        Args:
+            notification_methods: Set of notification method strings to accept.
+                Defaults to {'center', 'HTTP'}. For NVRs, you may want to include
+                additional methods like 'record', 'email', 'beep'.
         """
+        if notification_methods is None:
+            notification_methods = {'center', 'HTTP'}
+        # Normalize to lowercase for comparison
+        notification_methods_lower = {m.lower() for m in notification_methods}
+
         events = {}
         nvrflag = False
         event_xml = []
@@ -445,11 +455,9 @@ class HikCamera(object):
                     for notifytrigger in etnotify:
                         ntype = notifytrigger.find(
                             self.element_query('notificationMethod', CONTEXT_TRIG))
-                        if ntype.text == 'center' or ntype.text == 'HTTP':
-                            """
-                            If we got this far we found an event that we want
-                            to track.
-                            """
+                        if ntype is not None and ntype.text and \
+                                ntype.text.lower() in notification_methods_lower:
+                            # Found an event with a valid notification method
                             events.setdefault(ettype.text, []) \
                                 .append(etchannel_num)
 
@@ -703,114 +711,6 @@ class HikCamera(object):
                     self.event_states[event_name].append(
                         [False, channel, 0, datetime.datetime.now()]
                     )
-
-
-def get_nvr_events(host, port=DEFAULT_PORT, usr=None, pwd=None, verify_ssl=True):
-    """Fetch events from NVR with broader notification method support.
-
-    This function extends the standard event detection by also accepting
-    'record', 'email', and 'beep' notification methods, which are commonly
-    used on NVRs but ignored by the standard get_event_triggers method.
-
-    Args:
-        host: The host URL (e.g., 'http://192.168.1.64').
-        port: The port number (default 80).
-        usr: Username for authentication.
-        pwd: Password for authentication.
-        verify_ssl: Whether to verify SSL certificates.
-
-    Returns:
-        Dict mapping event type names to lists of channel numbers.
-    """
-    root_url = '{}:{}'.format(host, port)
-    events = {}
-
-    session = requests.Session()
-    session.verify = verify_ssl
-    session.auth = HTTPDigestAuth(usr, pwd)
-    session.headers.update(DEFAULT_HEADERS)
-
-    urls = [
-        '%s/ISAPI/Event/triggers' % root_url,
-        '%s/Event/triggers' % root_url,
-    ]
-
-    response = None
-    for url in urls:
-        try:
-            response = session.get(url, timeout=CONNECT_TIMEOUT)
-            if response.status_code == requests.codes.ok:
-                break
-        except (requests.exceptions.RequestException,
-                requests.exceptions.ConnectionError):
-            continue
-
-    if response is None or response.status_code != requests.codes.ok:
-        _LOGGING.warning('Unable to fetch event triggers from NVR')
-        session.close()
-        return events
-
-    try:
-        tree = ET.fromstring(response.text)
-    except ET.ParseError as err:
-        _LOGGING.error('Failed to parse event triggers XML: %s', err)
-        session.close()
-        return events
-
-    # Find namespace from root tag
-    namespace = ''
-    root_tag = tree.tag
-    if root_tag.startswith('{'):
-        namespace = root_tag.split('}')[0] + '}'
-
-    # Try different XML structures (camera vs NVR)
-    event_triggers = tree.findall('.//{0}EventTrigger'.format(namespace))
-
-    for trigger in event_triggers:
-        # Get event type
-        event_type_elem = trigger.find('{0}eventType'.format(namespace))
-        if event_type_elem is None or not event_type_elem.text:
-            continue
-
-        event_type = event_type_elem.text.lower()
-
-        # Skip videoloss as it's used for watchdog
-        if event_type == 'videoloss':
-            continue
-
-        # Get channel number
-        channel_num = 0
-        for channel_name in CHANNEL_NAMES:
-            channel_elem = trigger.find('{0}{1}'.format(namespace, channel_name))
-            if channel_elem is not None and channel_elem.text:
-                try:
-                    channel_num = int(channel_elem.text)
-                    break
-                except ValueError:
-                    continue
-
-        # Check if any valid notification method is configured
-        notification_list = trigger.find(
-            '{0}EventTriggerNotificationList'.format(namespace))
-        has_valid_notification = False
-
-        if notification_list is not None:
-            for notification in notification_list:
-                method_elem = notification.find(
-                    '{0}notificationMethod'.format(namespace))
-                if method_elem is not None and method_elem.text:
-                    if method_elem.text.lower() in {m.lower() for m in VALID_NOTIFICATION_METHODS}:
-                        has_valid_notification = True
-                        break
-
-        if has_valid_notification:
-            # Map to friendly name
-            friendly_name = SENSOR_MAP.get(event_type)
-            if friendly_name:
-                events.setdefault(friendly_name, []).append(channel_num)
-
-    session.close()
-    return events
 
 
 def inject_events_into_camera(camera, events):

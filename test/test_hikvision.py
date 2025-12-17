@@ -5,8 +5,8 @@ import requests
 import unittest
 
 from unittest.mock import MagicMock, patch, PropertyMock
-from pyhik.hikvision import HikCamera, get_nvr_events, inject_events_into_camera
-from pyhik.constants import (CONNECT_TIMEOUT)
+from pyhik.hikvision import HikCamera, inject_events_into_camera
+from pyhik.constants import CONNECT_TIMEOUT, VALID_NOTIFICATION_METHODS
 
 XML = """<MotionDetection xmlns="http://www.hikvision.com/ver20/XMLSchema" version="2.0">
     <enabled>{}</enabled>
@@ -82,7 +82,8 @@ class HikvisionTestCase(unittest.TestCase):
         self.assertFalse(device.current_motion_detection_state)
 
 
-NVR_EVENTS_XML = """<?xml version="1.0" encoding="UTF-8"?>
+# XML for testing get_event_triggers with various notification methods
+EVENT_TRIGGERS_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <EventTriggerList xmlns="http://www.hikvision.com/ver20/XMLSchema" version="2.0">
     <EventTrigger version="2.0">
         <id>1</id>
@@ -130,98 +131,114 @@ NVR_EVENTS_XML = """<?xml version="1.0" encoding="UTF-8"?>
     </EventTrigger>
     <EventTrigger version="2.0">
         <id>5</id>
-        <eventType>videoloss</eventType>
-        <videoInputChannelID>1</videoInputChannelID>
+        <eventType>VMD</eventType>
+        <videoInputChannelID>5</videoInputChannelID>
         <EventTriggerNotificationList>
             <EventTriggerNotification>
                 <id>1</id>
-                <notificationMethod>center</notificationMethod>
-            </EventTriggerNotification>
-        </EventTriggerNotificationList>
-    </EventTrigger>
-    <EventTrigger version="2.0">
-        <id>6</id>
-        <eventType>facedetection</eventType>
-        <videoInputChannelID>1</videoInputChannelID>
-        <EventTriggerNotificationList>
-            <EventTriggerNotification>
-                <id>1</id>
-                <notificationMethod>unknown</notificationMethod>
+                <notificationMethod>HTTP</notificationMethod>
             </EventTriggerNotification>
         </EventTriggerNotificationList>
     </EventTrigger>
 </EventTriggerList>"""
 
 
-class GetNvrEventsTestCase(unittest.TestCase):
+class GetEventTriggersTestCase(unittest.TestCase):
     @patch("pyhik.hikvision.requests.Session")
-    def test_get_nvr_events_parses_events(self, mock_session_class):
-        """Test that get_nvr_events correctly parses events with various notification methods."""
-        session = mock_session_class.return_value
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    def test_default_notification_methods(self, mock_info, mock_session):
+        """Test that get_event_triggers defaults to center and HTTP only."""
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        session = mock_session.return_value
         response = MagicMock()
         response.status_code = requests.codes.ok
-        response.text = NVR_EVENTS_XML
+        response.text = EVENT_TRIGGERS_XML
         session.get.return_value = response
 
-        events = get_nvr_events("http://localhost", usr="admin", pwd="password")
+        camera = HikCamera(host="localhost")
+        # Call get_event_triggers with default (no args)
+        events = camera.get_event_triggers()
 
-        # Should find Motion events on channels 1 and 4 (VMD with record and center)
-        self.assertIn("Motion", events)
-        self.assertEqual(sorted(events["Motion"]), [1, 4])
+        # Should only find VMD on channels 4 and 5 (center and HTTP)
+        self.assertIn("VMD", events)
+        self.assertEqual(sorted(events["VMD"]), [4, 5])
 
-        # Should find Line Crossing on channel 2 (email notification)
-        self.assertIn("Line Crossing", events)
-        self.assertEqual(events["Line Crossing"], [2])
-
-        # Should find Field Detection on channel 3 (beep notification)
-        self.assertIn("Field Detection", events)
-        self.assertEqual(events["Field Detection"], [3])
-
-        # Should NOT include videoloss (skipped)
-        self.assertNotIn("Video Loss", events)
-
-        # Should NOT include facedetection (unknown notification method)
-        self.assertNotIn("Face Detection", events)
-
-        session.close.assert_called_once()
+        # Should NOT find events with record, email, beep notification methods
+        self.assertNotIn("linedetection", events)
+        self.assertNotIn("fielddetection", events)
 
     @patch("pyhik.hikvision.requests.Session")
-    def test_get_nvr_events_handles_connection_error(self, mock_session_class):
-        """Test that get_nvr_events handles connection errors gracefully."""
-        session = mock_session_class.return_value
-        session.get.side_effect = requests.exceptions.ConnectionError("Connection refused")
-
-        events = get_nvr_events("http://localhost", usr="admin", pwd="password")
-
-        self.assertEqual(events, {})
-        session.close.assert_called_once()
-
-    @patch("pyhik.hikvision.requests.Session")
-    def test_get_nvr_events_handles_bad_response(self, mock_session_class):
-        """Test that get_nvr_events handles non-200 responses."""
-        session = mock_session_class.return_value
-        response = MagicMock()
-        response.status_code = requests.codes.unauthorized
-        session.get.return_value = response
-
-        events = get_nvr_events("http://localhost", usr="admin", pwd="password")
-
-        self.assertEqual(events, {})
-        session.close.assert_called_once()
-
-    @patch("pyhik.hikvision.requests.Session")
-    def test_get_nvr_events_handles_invalid_xml(self, mock_session_class):
-        """Test that get_nvr_events handles invalid XML gracefully."""
-        session = mock_session_class.return_value
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    def test_custom_notification_methods(self, mock_info, mock_session):
+        """Test that get_event_triggers accepts custom notification methods."""
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        session = mock_session.return_value
         response = MagicMock()
         response.status_code = requests.codes.ok
-        response.text = "not valid xml"
+        response.text = EVENT_TRIGGERS_XML
         session.get.return_value = response
 
-        events = get_nvr_events("http://localhost", usr="admin", pwd="password")
+        camera = HikCamera(host="localhost")
+        # Call get_event_triggers with expanded notification methods
+        events = camera.get_event_triggers(
+            notification_methods={'center', 'HTTP', 'record', 'email', 'beep'}
+        )
 
-        self.assertEqual(events, {})
-        session.close.assert_called_once()
+        # Should find VMD on channels 1, 4, 5 (record, center, HTTP)
+        self.assertIn("VMD", events)
+        self.assertEqual(sorted(events["VMD"]), [1, 4, 5])
+
+        # Should find linedetection on channel 2 (email)
+        self.assertIn("linedetection", events)
+        self.assertEqual(events["linedetection"], [2])
+
+        # Should find fielddetection on channel 3 (beep)
+        self.assertIn("fielddetection", events)
+        self.assertEqual(events["fielddetection"], [3])
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    def test_valid_notification_methods_constant(self, mock_info, mock_session):
+        """Test using VALID_NOTIFICATION_METHODS constant."""
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        session = mock_session.return_value
+        response = MagicMock()
+        response.status_code = requests.codes.ok
+        response.text = EVENT_TRIGGERS_XML
+        session.get.return_value = response
+
+        camera = HikCamera(host="localhost")
+        # Use the exported constant
+        events = camera.get_event_triggers(
+            notification_methods=VALID_NOTIFICATION_METHODS
+        )
+
+        # Should find all events
+        self.assertIn("VMD", events)
+        self.assertEqual(sorted(events["VMD"]), [1, 4, 5])
+        self.assertIn("linedetection", events)
+        self.assertIn("fielddetection", events)
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    def test_case_insensitive_notification_methods(self, mock_info, mock_session):
+        """Test that notification method matching is case insensitive."""
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        session = mock_session.return_value
+        response = MagicMock()
+        response.status_code = requests.codes.ok
+        response.text = EVENT_TRIGGERS_XML
+        session.get.return_value = response
+
+        camera = HikCamera(host="localhost")
+        # Use uppercase - should still match lowercase in XML
+        events = camera.get_event_triggers(
+            notification_methods={'CENTER', 'http', 'RECORD'}
+        )
+
+        # Should find VMD on channels 1, 4, 5
+        self.assertIn("VMD", events)
+        self.assertEqual(sorted(events["VMD"]), [1, 4, 5])
 
 
 class InjectEventsTestCase(unittest.TestCase):
