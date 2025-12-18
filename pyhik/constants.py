@@ -5,6 +5,7 @@ Constants list
 Copyright (c) 2016-2021 John Mihalic <https://github.com/mezz64>
 Licensed under the MIT license.
 """
+from dataclasses import dataclass
 
 MAJOR_VERSION = 0
 MINOR_VERSION = 3
@@ -67,3 +68,12 @@ CONTEXT_INFO = 'INFO'
 CONTEXT_TRIG = 'TRIGGERS'
 CONTEXT_ALERT = 'ALERTS'
 CONTEXT_MOTION = 'MOTION'
+
+
+@dataclass
+class HikvisionChannel:
+    """Represents a video input channel on a Hikvision device."""
+
+    id: int
+    name: str
+    enabled: bool = True

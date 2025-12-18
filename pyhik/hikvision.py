@@ -37,7 +37,7 @@ from pyhik.constants import (
     DEFAULT_PORT, DEFAULT_HEADERS, XML_NAMESPACE, SENSOR_MAP,
     CAM_DEVICE, NVR_DEVICE, CONNECT_TIMEOUT, READ_TIMEOUT, CONTEXT_INFO,
     CONTEXT_TRIG, CONTEXT_MOTION, CONTEXT_ALERT, CHANNEL_NAMES, ID_TYPES,
-    __version__)
+    HikvisionChannel, __version__)
 
 
 _LOGGING = logging.getLogger(__name__)
@@ -469,6 +469,171 @@ class HikCamera(object):
         self.hik_request.close()
 
         return events
+
+    def get_video_channels(self):
+        """Fetch available video input channels from Hikvision device.
+
+        This queries the ISAPI to discover available camera channels on
+        NVRs and standalone cameras.
+
+        Returns a list of HikvisionChannel objects.
+        """
+        channels = []
+
+        # Try different ISAPI endpoints for channel discovery
+        urls = [
+            '%s/ISAPI/System/Video/inputs/channels' % self.root_url,
+            '%s/ISAPI/ContentMgmt/InputProxy/channels' % self.root_url,
+        ]
+
+        response = None
+        for url in urls:
+            try:
+                response = self.hik_request.get(url, timeout=CONNECT_TIMEOUT)
+                if response.status_code == requests.codes.ok:
+                    break
+            except requests.exceptions.RequestException:
+                continue
+
+        if response is None or response.status_code != requests.codes.ok:
+            _LOGGING.debug('Unable to fetch video channels from device, trying streaming')
+            # Fall back to streaming channels endpoint
+            try:
+                response = self.hik_request.get(
+                    '%s/ISAPI/Streaming/channels' % self.root_url,
+                    timeout=CONNECT_TIMEOUT)
+            except requests.exceptions.RequestException:
+                return channels
+
+        if response is None or response.status_code != requests.codes.ok:
+            _LOGGING.warning('Unable to fetch video channels from device')
+            return channels
+
+        try:
+            tree = ET.fromstring(response.text)
+        except ET.ParseError as err:
+            _LOGGING.error('Failed to parse video channels XML: %s', err)
+            return channels
+
+        # Handle namespace
+        namespace = ''
+        root_tag = tree.tag
+        if root_tag.startswith('{'):
+            namespace = root_tag.split('}')[0] + '}'
+
+        # Try to find VideoInputChannel elements (from /System/Video/inputs/channels)
+        channel_elements = tree.findall('.//%sVideoInputChannel' % namespace)
+
+        # If not found, try InputProxyChannel (from /ContentMgmt/InputProxy/channels)
+        if not channel_elements:
+            channel_elements = tree.findall('.//%sInputProxyChannel' % namespace)
+
+        # If still not found, try StreamingChannel (from /Streaming/channels)
+        if not channel_elements:
+            channel_elements = tree.findall('.//%sStreamingChannel' % namespace)
+            # Streaming channels have different structure - extract unique channel IDs
+            seen_channels = set()
+            for elem in channel_elements:
+                channel_id_elem = elem.find('%sid' % namespace)
+                if channel_id_elem is not None and channel_id_elem.text:
+                    try:
+                        # Channel IDs are formatted as (channel * 100) + stream_type
+                        # e.g., 101 = channel 1 main, 102 = channel 1 sub
+                        full_id = int(channel_id_elem.text)
+                        channel_num = full_id // 100
+                        if channel_num > 0 and channel_num not in seen_channels:
+                            seen_channels.add(channel_num)
+                            name_elem = elem.find('%schannelName' % namespace)
+                            channel_name = (
+                                name_elem.text
+                                if name_elem is not None and name_elem.text
+                                else 'Channel %d' % channel_num
+                            )
+                            enabled_elem = elem.find('%senabled' % namespace)
+                            enabled = (
+                                enabled_elem.text.lower() == 'true'
+                                if enabled_elem is not None and enabled_elem.text
+                                else True
+                            )
+                            channels.append(
+                                HikvisionChannel(
+                                    id=channel_num, name=channel_name, enabled=enabled
+                                )
+                            )
+                    except ValueError:
+                        continue
+            return channels
+
+        # Process VideoInputChannel or InputProxyChannel elements
+        for elem in channel_elements:
+            channel_id_elem = elem.find('%sid' % namespace)
+            if channel_id_elem is None or not channel_id_elem.text:
+                continue
+
+            try:
+                channel_id = int(channel_id_elem.text)
+            except ValueError:
+                continue
+
+            # Get channel name
+            name_elem = elem.find('%sname' % namespace)
+            if name_elem is None or not name_elem.text:
+                name_elem = elem.find('%schannelName' % namespace)
+            channel_name = (
+                name_elem.text
+                if name_elem is not None and name_elem.text
+                else 'Channel %d' % channel_id
+            )
+
+            # Check if channel is enabled (for InputProxyChannel)
+            enabled = True
+            enabled_elem = elem.find('%senabled' % namespace)
+            if enabled_elem is not None and enabled_elem.text:
+                enabled = enabled_elem.text.lower() == 'true'
+
+            # For InputProxyChannel, also check online status
+            online_elem = elem.find('%sonline' % namespace)
+            if online_elem is not None and online_elem.text:
+                enabled = enabled and online_elem.text.lower() == 'true'
+
+            channels.append(
+                HikvisionChannel(id=channel_id, name=channel_name, enabled=enabled)
+            )
+
+        return channels
+
+    def build_rtsp_url(self, channel, stream_type=1, rtsp_port=554):
+        """Build RTSP URL for a Hikvision channel.
+
+        Args:
+            channel: Channel number (1-based)
+            stream_type: 1=main stream, 2=sub stream, 3=third stream
+            rtsp_port: RTSP port (usually 554)
+
+        Returns:
+            RTSP URL string
+        """
+        # Channel ID format: (channel * 100) + stream_type
+        channel_id = channel * 100 + stream_type
+        # Extract host without protocol prefix
+        host = self.host
+        if '://' in host:
+            host = host.split('://')[1]
+        return 'rtsp://%s:%s@%s:%d/Streaming/Channels/%d' % (
+            self.usr, self.pwd, host, rtsp_port, channel_id)
+
+    def build_snapshot_url(self, channel, stream_type=1):
+        """Build snapshot URL for a Hikvision channel.
+
+        Args:
+            channel: Channel number (1-based)
+            stream_type: 1=main stream, 2=sub stream
+
+        Returns:
+            Snapshot URL string (authentication handled separately by session)
+        """
+        channel_id = channel * 100 + stream_type
+        return '%s/ISAPI/Streaming/channels/%d/picture' % (self.root_url, channel_id)
 
     def watchdog_handler(self):
         """Take care of threads if wachdog expires."""
