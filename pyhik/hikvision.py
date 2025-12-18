@@ -367,12 +367,22 @@ class HikCamera(object):
             _LOGGING.error('There was a problem: %s', err)
             return None
 
-    def get_event_triggers(self):
+    def get_event_triggers(self, notification_methods=None):
         """
         Returns dict of supported events.
         Key = Event Type
         List = Channels that have that event activated
+
+        Args:
+            notification_methods: Set of notification method strings to accept.
+                Defaults to {'center', 'HTTP'}. For NVRs, you may want to include
+                additional methods like 'record', 'email', 'beep'.
         """
+        if notification_methods is None:
+            notification_methods = {'center', 'HTTP'}
+        # Normalize to lowercase for comparison
+        notification_methods_lower = {m.lower() for m in notification_methods}
+
         events = {}
         nvrflag = False
         event_xml = []
@@ -445,11 +455,9 @@ class HikCamera(object):
                     for notifytrigger in etnotify:
                         ntype = notifytrigger.find(
                             self.element_query('notificationMethod', CONTEXT_TRIG))
-                        if ntype.text == 'center' or ntype.text == 'HTTP':
-                            """
-                            If we got this far we found an event that we want
-                            to track.
-                            """
+                        if ntype is not None and ntype.text and \
+                                ntype.text.lower() in notification_methods_lower:
+                            # Found an event with a valid notification method
                             # Catch events with bad IDs
                             if etchannel_num == 0 : etchannel_num = 1
                             events.setdefault(ettype.text, []) \
@@ -679,3 +687,41 @@ class HikCamera(object):
         except KeyError:
             _LOGGING.debug('Error updating attributes for: (%s, %s)',
                            event, channel)
+
+    def inject_events(self, events):
+        """Inject discovered events into the camera's event_states.
+
+        This allows the camera to track events that wouldn't normally be
+        detected, such as those from NVRs with non-standard notification
+        methods.
+
+        Args:
+            events: Dict mapping event type names to lists of channel numbers.
+        """
+        for event_name, channels in events.items():
+            for channel in channels:
+                # Only add if not already present
+                if event_name not in self.event_states:
+                    self.event_states[event_name] = []
+
+                # Check if this channel is already tracked
+                channel_exists = any(
+                    sensor[1] == channel for sensor in self.event_states[event_name]
+                )
+                if not channel_exists:
+                    # Add the event state: [is_active, channel, count, last_update_time]
+                    self.event_states[event_name].append(
+                        [False, channel, 0, datetime.datetime.now()]
+                    )
+
+
+def inject_events_into_camera(camera, events):
+    """Inject discovered events into the pyhik camera's event_states.
+
+    This allows the camera to track events that wouldn't normally be detected.
+
+    Args:
+        camera: A HikCamera instance.
+        events: Dict mapping event type names to lists of channel numbers.
+    """
+    camera.inject_events(events)

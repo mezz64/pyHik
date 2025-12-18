@@ -67,3 +67,7 @@ CONTEXT_INFO = 'INFO'
 CONTEXT_TRIG = 'TRIGGERS'
 CONTEXT_ALERT = 'ALERTS'
 CONTEXT_MOTION = 'MOTION'
+
+# Notification methods that indicate the event is active/configured
+# Expanded from original list of just 'center' and 'HTTP' to support NVRs
+VALID_NOTIFICATION_METHODS = {'center', 'HTTP', 'record', 'email', 'beep'}
