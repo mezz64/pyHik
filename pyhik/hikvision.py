@@ -103,6 +103,10 @@ class HikCamera(object):
         self.hik_request.auth = (usr, pwd)
         self.hik_request.headers.update(DEFAULT_HEADERS)
 
+        # Callbacks
+        self._updateCallbacks = []
+        self.initialize()
+
         # Define event stream processing thread
         self.kill_thrd = threading.Event()
         self.reset_thrd = threading.Event()
@@ -110,10 +114,6 @@ class HikCamera(object):
             target=self.alert_stream, args=(self.reset_thrd, self.kill_thrd,))
         self.thrd.daemon = False
 
-        # Callbacks
-        self._updateCallbacks = []
-
-        self.initialize()
 
     @property
     def get_id(self):
@@ -273,43 +273,47 @@ class HikCamera(object):
         """Initialize deviceInfo and available events."""
         device_info = self.get_device_info()
 
-        if device_info is None:
-            self.name = None
-            self.cam_id = None
-            self.event_states = None
-            return
+        while True:
+            device_info = self.get_device_info()
 
-        for key in device_info:
-            if key == 'deviceName':
-                self.name = device_info[key]
-            elif key == 'deviceID':
-                if len(device_info[key]) > 10:
-                    self.cam_id = device_info[key]
-                else:
-                    self.cam_id = uuid.uuid4()
+            if device_info is None:
+                _LOGGING.error('Failed to fetch device info. Retrying in 10 seconds...')
+                time.sleep(10)
+                continue
 
-        events_available = self.get_event_triggers()
-        if events_available:
-            for event, channel_list in events_available.items():
-                for channel in channel_list:
-                    try:
-                        # Tracking videoloss events causes problems since they are used
-                        # as the watchdog so ignore them if they are enabled in the triggers.
-                        if event.lower() != 'videoloss':
-                            self.event_states.setdefault(
-                                SENSOR_MAP[event.lower()], []).append(
-                                    [False, channel, 0, datetime.datetime.now()])
-                    except KeyError:
-                        # Sensor type doesn't have a known friendly name
-                        # We can't reliably handle it at this time...
-                        _LOGGING.warning(
-                            'Sensor type "%s" is unsupported.', event)
+            for key in device_info:
+                if key == 'deviceName':
+                    self.name = device_info[key]
+                elif key == 'deviceID':
+                    if len(device_info[key]) > 10:
+                        self.cam_id = device_info[key]
+                    else:
+                        self.cam_id = uuid.uuid4()
 
-            _LOGGING.debug('Initialized Dictionary: %s', self.event_states)
-        else:
-            _LOGGING.debug('No Events available in dictionary.')
+            events_available = self.get_event_triggers()
+            if events_available:
+                for event, channel_list in events_available.items():
+                    for channel in channel_list:
+                        try:
+                            # Tracking videoloss events causes problems since they are used
+                            # as the watchdog so ignore them if they are enabled in the triggers.
+                            if event.lower() != 'videoloss':
+                                self.event_states.setdefault(
+                                    SENSOR_MAP[event.lower()], []).append(
+                                        [False, channel, 0, datetime.datetime.now()])
+                        except KeyError:
+                            # Sensor type doesn't have a known friendly name
+                            # We can't reliably handle it at this time...
+                            _LOGGING.warning(
+                                'Sensor type "%s" is unsupported.', event)
 
-        self.get_motion_detection()
+                _LOGGING.debug('Initialized Dictionary: %s', self.event_states)
+            else:
+                _LOGGING.debug('No Events available in dictionary.')
+
+            self.get_motion_detection()
+            break
+
 
     def get_device_info(self):
         """Parse deviceInfo into dictionary."""
@@ -644,6 +648,11 @@ class HikCamera(object):
         # Some events don't post an inactive XML, only active.
         # If we don't get an active update for 5 seconds we can
         # assume the event is no longer active and update accordingly.
+
+        if self.event_states is None:
+            _LOGGING.warning('Event states not initialized. Skipping update_stale.')
+            return
+
         for etype, echannels in self.event_states.items():
             for eprop in echannels:
                 if eprop[3] is not None:
