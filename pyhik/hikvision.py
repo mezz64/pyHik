@@ -813,7 +813,7 @@ class HikCamera(object):
             for sensor in self.event_states[event]:
                 if sensor[1] == int(channel):
                     return sensor
-        except KeyError:
+        except (KeyError, TypeError):
             return None
 
     def update_attributes(self, event, channel, attr):
@@ -822,7 +822,7 @@ class HikCamera(object):
             for i, sensor in enumerate(self.event_states[event]):
                 if sensor[1] == int(channel):
                     self.event_states[event][i] = attr
-        except KeyError:
+        except (KeyError, TypeError):
             _LOGGING.debug('Error updating attributes for: (%s, %s)',
                            event, channel)
 
