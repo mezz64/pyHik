@@ -17,13 +17,13 @@ from setuptools import setup
 setup(
     name='pyHik',
     packages=['pyhik'],
-    version='0.4.1',
+    version='0.4.2',
     description='Python API for Hikvision cameras and NVRs - event streaming, ISAPI access, and device control.',
     author='John Mihalic',
     author_email='mezz64@users.noreply.github.com',
     license='MIT',
     url='https://github.com/mezz64/pyhik',
-    download_url='https://github.com/mezz64/pyhik/tarball/0.4.1',
+    download_url='https://github.com/mezz64/pyhik/tarball/0.4.2',
     keywords=['hik', 'hikvision', 'event stream', 'events', 'api wrapper', 'homeassistant', 'isapi', 'nvr', 'camera'],
     classifiers=[
         'Development Status :: 4 - Beta',
