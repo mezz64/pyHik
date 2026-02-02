@@ -321,8 +321,10 @@ class HikCamera(object):
         else:
             stream_channel = stream_type
 
-        # Extract host without port for RTSP URL
+        # Extract host without port or protocol for RTSP URL
         host = self.host
+        if '://' in host:
+            host = host.split('://')[1]
 
         # URL encode credentials for safety
         encoded_user = quote(self.usr, safe='')
