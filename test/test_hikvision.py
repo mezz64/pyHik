@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 
+import io
 import logging
 import requests
 import unittest
 
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch, PropertyMock, call
 from pyhik.hikvision import HikCamera, inject_events_into_camera
-from pyhik.constants import CONNECT_TIMEOUT, VALID_NOTIFICATION_METHODS
+from pyhik.constants import (
+    CONNECT_TIMEOUT, DOWNLOAD_TIMEOUT, VALID_NOTIFICATION_METHODS
+)
 
 XML = """<MotionDetection xmlns="http://www.hikvision.com/ver20/XMLSchema" version="2.0">
     <enabled>{}</enabled>
@@ -310,6 +313,146 @@ class InjectEventsTestCase(unittest.TestCase):
         self.assertEqual(len(camera.event_states["Motion"]), 2)
         channels = [sensor[1] for sensor in camera.event_states["Motion"]]
         self.assertEqual(sorted(channels), [1, 2])
+
+
+class DownloadRecordingTestCase(unittest.TestCase):
+    """Tests for the download_recording method."""
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    @patch("pyhik.hikvision.HikCamera.get_event_triggers")
+    def test_download_to_stream(self, mock_triggers, mock_info, mock_session):
+        """Test downloading a recording to a file-like object."""
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        mock_triggers.return_value = {}
+        session = mock_session.return_value
+        session.get.return_value = MagicMock(status_code=requests.codes.not_found)
+
+        # Mock the POST response for download
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.iter_content.return_value = [b'chunk1', b'chunk2', b'chunk3']
+        session.post.return_value = mock_response
+
+        camera = HikCamera(host="localhost")
+        output = io.BytesIO()
+        playback_uri = "rtsp://10.0.0.1/Streaming/tracks/101?starttime=20240101"
+
+        total = camera.download_recording(playback_uri, output)
+
+        self.assertEqual(output.getvalue(), b'chunk1chunk2chunk3')
+        self.assertEqual(total, 18)
+        mock_response.raise_for_status.assert_called_once()
+
+        # Verify the POST was called with correct URL and XML payload
+        post_call = session.post.call_args
+        self.assertIn('/ISAPI/ContentMgmt/download', post_call[0][0])
+        self.assertIn('<playbackURI>', post_call[1].get('data', post_call[0][1] if len(post_call[0]) > 1 else ''))
+        self.assertIn(playback_uri, post_call[1].get('data', ''))
+        self.assertTrue(post_call[1].get('stream', False))
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    @patch("pyhik.hikvision.HikCamera.get_event_triggers")
+    def test_download_iterator_mode(self, mock_triggers, mock_info, mock_session):
+        """Test downloading a recording as an iterator."""
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        mock_triggers.return_value = {}
+        session = mock_session.return_value
+        session.get.return_value = MagicMock(status_code=requests.codes.not_found)
+
+        chunks = [b'data1', b'data2']
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.iter_content.return_value = iter(chunks)
+        session.post.return_value = mock_response
+
+        camera = HikCamera(host="localhost")
+        playback_uri = "rtsp://10.0.0.1/Streaming/tracks/101"
+
+        result = camera.download_recording(playback_uri)
+
+        # Result should be an iterator
+        collected = list(result)
+        self.assertEqual(collected, chunks)
+        mock_response.iter_content.assert_called_once_with(chunk_size=65536)
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    @patch("pyhik.hikvision.HikCamera.get_event_triggers")
+    def test_download_xml_payload(self, mock_triggers, mock_info, mock_session):
+        """Test that the XML payload is correctly constructed."""
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        mock_triggers.return_value = {}
+        session = mock_session.return_value
+        session.get.return_value = MagicMock(status_code=requests.codes.not_found)
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.iter_content.return_value = []
+        session.post.return_value = mock_response
+
+        camera = HikCamera(host="localhost")
+        playback_uri = "rtsp://10.0.0.1/tracks/101?starttime=20240101T000000Z"
+
+        camera.download_recording(playback_uri, io.BytesIO())
+
+        post_call = session.post.call_args
+        xml_data = post_call[1].get('data', '')
+        self.assertIn('<?xml version="1.0" encoding="utf-8"?>', xml_data)
+        self.assertIn('<downloadRequest>', xml_data)
+        self.assertIn('<playbackURI>%s</playbackURI>' % playback_uri, xml_data)
+        self.assertIn('</downloadRequest>', xml_data)
+
+        # Verify headers
+        headers = post_call[1].get('headers', {})
+        self.assertEqual(headers.get('Content-Type'), 'application/xml')
+
+        # Verify timeout
+        timeout = post_call[1].get('timeout')
+        self.assertEqual(timeout, (CONNECT_TIMEOUT, DOWNLOAD_TIMEOUT))
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    @patch("pyhik.hikvision.HikCamera.get_event_triggers")
+    def test_download_http_error(self, mock_triggers, mock_info, mock_session):
+        """Test that HTTP errors are propagated."""
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        mock_triggers.return_value = {}
+        session = mock_session.return_value
+        session.get.return_value = MagicMock(status_code=requests.codes.not_found)
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            "404 Not Found"
+        )
+        session.post.return_value = mock_response
+
+        camera = HikCamera(host="localhost")
+
+        with self.assertRaises(requests.exceptions.HTTPError):
+            camera.download_recording("rtsp://bad/uri", io.BytesIO())
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    @patch("pyhik.hikvision.HikCamera.get_event_triggers")
+    def test_download_custom_chunk_size(self, mock_triggers, mock_info, mock_session):
+        """Test that custom chunk_size is respected."""
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        mock_triggers.return_value = {}
+        session = mock_session.return_value
+        session.get.return_value = MagicMock(status_code=requests.codes.not_found)
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.iter_content.return_value = iter([])
+        session.post.return_value = mock_response
+
+        camera = HikCamera(host="localhost")
+        list(camera.download_recording("rtsp://test/uri", chunk_size=1024))
+
+        mock_response.iter_content.assert_called_once_with(chunk_size=1024)
 
 
 if __name__ == "__main__":
