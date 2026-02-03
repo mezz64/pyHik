@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import logging
 from typing import Any, Dict, List, Optional, Union
+from urllib.parse import quote, urlparse, urlunparse
 
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
@@ -191,16 +192,20 @@ class ISAPIClient:
             verify_ssl: Verify SSL certificates.
             rtsp_port: RTSP port for streaming (default 554).
         """
-        self.host = host
-        self.port = port
+        # Parse the host to extract clean hostname and handle URLs with scheme/port
+        protocol = "https" if ssl else "http"
+        parsed = urlparse(host if '://' in str(host) else f'{protocol}://{host}')
+        self.host = parsed.hostname or host
+        self.port = parsed.port or port
         self.username = username
         self.password = password
         self.ssl = ssl
         self.verify_ssl = verify_ssl
         self.rtsp_port = rtsp_port
 
-        protocol = "https" if ssl else "http"
-        self.base_url = f"{protocol}://{host}:{port}"
+        self.base_url = urlunparse((
+            protocol, f'{self.host}:{self.port}', '', '', '', ''
+        ))
 
         self._session = requests.Session()
         self._session.verify = verify_ssl
@@ -790,16 +795,21 @@ class ISAPIClient:
         """
         stream_id = channel * 100 + stream_type
         protocol = "rtsps" if self.ssl else "rtsp"
+        path = f"/Streaming/Channels/{stream_id}"
 
         if include_credentials:
-            return (
-                f"{protocol}://{self.username}:{self.password}@"
-                f"{self.host}:{self.rtsp_port}/Streaming/Channels/{stream_id}"
-            )
-        return (
-            f"{protocol}://{self.host}:{self.rtsp_port}"
-            f"/Streaming/Channels/{stream_id}"
-        )
+            encoded_user = quote(self.username, safe='')
+            encoded_pwd = quote(self.password, safe='')
+            return urlunparse((
+                protocol,
+                f'{encoded_user}:{encoded_pwd}@{self.host}:{self.rtsp_port}',
+                path, '', '', ''
+            ))
+        return urlunparse((
+            protocol,
+            f'{self.host}:{self.rtsp_port}',
+            path, '', '', ''
+        ))
 
     def reboot(self) -> None:
         """Reboot the device."""
