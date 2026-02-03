@@ -16,7 +16,7 @@ import datetime
 from dataclasses import dataclass
 import logging
 import uuid
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, urlunparse
 
 try:
     import xml.etree.cElementTree as ET
@@ -109,7 +109,12 @@ class HikCamera(object):
             _LOGGING.error('Host not specified! Cannot continue.')
             return
 
-        self.host = host
+        # Parse the host to extract clean hostname and determine scheme/port
+        parsed = urlparse(host if '://' in str(host) else f'http://{host}')
+        self.host = parsed.hostname or host
+        effective_port = parsed.port or port
+        scheme = parsed.scheme or 'http'
+
         self.usr = usr
         self.pwd = pwd
         self.cam_id = 0
@@ -118,7 +123,9 @@ class HikCamera(object):
         self.motion_detection = None
         self._motion_detection_xml = None
 
-        self.root_url = '{}:{}'.format(host, port)
+        self.root_url = urlunparse((
+            scheme, f'{self.host}:{effective_port}', '', '', '', ''
+        ))
 
         self.namespace = {
             CONTEXT_INFO: None,
@@ -321,17 +328,16 @@ class HikCamera(object):
         else:
             stream_channel = stream_type
 
-        # Extract host without port or protocol for RTSP URL
-        host = self.host
-        if '://' in host:
-            host = host.split('://')[1]
-
         # URL encode credentials for safety
         encoded_user = quote(self.usr, safe='')
         encoded_pwd = quote(self.pwd, safe='')
 
-        return 'rtsp://%s:%s@%s:%d/Streaming/Channels/%d' % (
-            encoded_user, encoded_pwd, host, DEFAULT_RTSP_PORT, stream_channel)
+        return urlunparse((
+            'rtsp',
+            f'{encoded_user}:{encoded_pwd}@{self.host}:{DEFAULT_RTSP_PORT}',
+            f'/Streaming/Channels/{stream_channel}',
+            '', '', ''
+        ))
 
     def get_channels(self):
         """
@@ -1135,7 +1141,10 @@ def get_video_channels(host, port, username, password, ssl=False):
         List of VideoChannel objects.
     """
     protocol = "https" if ssl else "http"
-    root_url = "{}://{}:{}".format(protocol, host, port)
+    parsed = urlparse(host if '://' in str(host) else f'{protocol}://{host}')
+    clean_host = parsed.hostname or host
+    effective_port = parsed.port or port
+    root_url = urlunparse((protocol, f'{clean_host}:{effective_port}', '', '', '', ''))
     channels = []
 
     session = requests.Session()

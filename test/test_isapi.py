@@ -133,6 +133,38 @@ class TestISAPIClientBasics(unittest.TestCase):
             "rtsp://192.168.1.100:554/Streaming/Channels/101"
         )
 
+    def test_host_with_scheme(self):
+        """Test that host with http:// scheme is parsed correctly."""
+        client = ISAPIClient(host="http://192.168.1.100", port=80)
+        self.assertEqual(client.host, "192.168.1.100")
+        self.assertEqual(client.port, 80)
+        self.assertEqual(client.base_url, "http://192.168.1.100:80")
+
+    def test_host_with_scheme_and_port(self):
+        """Test that host with scheme and port extracts port from URL."""
+        client = ISAPIClient(host="http://192.168.1.100:8080", port=80)
+        self.assertEqual(client.host, "192.168.1.100")
+        self.assertEqual(client.port, 8080)
+        self.assertEqual(client.base_url, "http://192.168.1.100:8080")
+
+    def test_host_with_https_scheme(self):
+        """Test that host with https:// scheme is parsed correctly."""
+        client = ISAPIClient(host="https://192.168.1.100", port=443, ssl=True)
+        self.assertEqual(client.host, "192.168.1.100")
+        self.assertEqual(client.base_url, "https://192.168.1.100:443")
+
+    def test_rtsp_url_special_chars_in_password(self):
+        """Test that RTSP URL encodes special characters in credentials."""
+        client = ISAPIClient(
+            host="192.168.1.100",
+            username="admin",
+            password="p@ss:word/123",
+        )
+        url = client.get_rtsp_url(channel=1, stream_type=1)
+        self.assertIn("admin", url)
+        self.assertIn("p%40ss%3Aword%2F123", url)
+        self.assertNotIn("p@ss:word/123", url)
+
     def test_context_manager(self):
         """Test context manager usage."""
         with ISAPIClient(host="192.168.1.100") as client:
