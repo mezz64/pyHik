@@ -39,7 +39,8 @@ from pyhik.constants import (
     DEFAULT_PORT, DEFAULT_RTSP_PORT, DEFAULT_HEADERS, XML_NAMESPACE, SENSOR_MAP,
     CAM_DEVICE, NVR_DEVICE, CONNECT_TIMEOUT, READ_TIMEOUT, SNAPSHOT_TIMEOUT,
     RECORDING_SEARCH_TIMEOUT, CONTEXT_INFO, CONTEXT_TRIG, CONTEXT_MOTION,
-    CONTEXT_ALERT, CHANNEL_NAMES, ID_TYPES, __version__)
+    CONTEXT_ALERT, CHANNEL_NAMES, ID_TYPES, VALID_NOTIFICATION_METHODS,
+    __version__)
 
 # Register the default namespace to avoid ns0: prefixes in serialized XML
 ET.register_namespace('', XML_NAMESPACE)
@@ -428,7 +429,7 @@ class HikCamera(object):
                 else:
                     self.cam_id = uuid.uuid4()
 
-        events_available = self.get_event_triggers()
+        events_available = self.get_event_triggers(VALID_NOTIFICATION_METHODS)
         if events_available:
             for event, channel_list in events_available.items():
                 for channel in channel_list:
