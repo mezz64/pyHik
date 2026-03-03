@@ -127,15 +127,21 @@ class HikCamera(object):
             CONTEXT_MOTION: None
         }
 
-        # Build requests session for main thread calls
+        # Build requests session for main thread API calls (snapshots, etc.)
         # Default to basic authentication. It will change to digest inside
         # get_device_info if basic fails
         self.hik_request = requests.Session()
-
         self.hik_request.verify = verify_ssl
-
         self.hik_request.auth = (usr, pwd)
         self.hik_request.headers.update(DEFAULT_HEADERS)
+
+        # Separate session for the alert stream daemon thread.
+        # requests.Session is NOT thread-safe, so the stream thread
+        # must not share a session with main-thread API calls.
+        self.hik_request_stream = requests.Session()
+        self.hik_request_stream.verify = verify_ssl
+        self.hik_request_stream.auth = (usr, pwd)
+        self.hik_request_stream.headers.update(DEFAULT_HEADERS)
 
         # Define event stream processing thread
         self.kill_thrd = threading.Event()
@@ -462,6 +468,7 @@ class HikCamera(object):
             if response.status_code == requests.codes.unauthorized:
                 _LOGGING.debug('Basic authentication failed. Using digest.')
                 self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
+                self.hik_request_stream.auth = HTTPDigestAuth(self.usr, self.pwd)
                 using_digest = True
                 response = self.hik_request.get(url)
 
@@ -475,6 +482,7 @@ class HikCamera(object):
                 if not using_digest and response.status_code == requests.codes.unauthorized:
                     _LOGGING.debug('Basic authentication failed. Using digest.')
                     self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
+                    self.hik_request_stream.auth = HTTPDigestAuth(self.usr, self.pwd)
                     using_digest = True
                     response = self.hik_request.get(url)
 
@@ -616,7 +624,6 @@ class HikCamera(object):
                        self.cam_id, self.device_type)
 
         _LOGGING.debug('Found events: %s', events)
-        self.hik_request.close()
 
         return events
 
@@ -652,13 +659,13 @@ class HikCamera(object):
         while True:
 
             try:
-                stream = self.hik_request.get(url, stream=True,
-                                              timeout=(CONNECT_TIMEOUT,
-                                                       READ_TIMEOUT))
+                stream = self.hik_request_stream.get(url, stream=True,
+                                                     timeout=(CONNECT_TIMEOUT,
+                                                              READ_TIMEOUT))
                 if stream.status_code == requests.codes.not_found:
                     # Try alternate URL for stream
                     url = '%s/Event/notification/alertStream' % self.root_url
-                    stream = self.hik_request.get(url, stream=True)
+                    stream = self.hik_request_stream.get(url, stream=True)
 
                 if stream.status_code != requests.codes.ok:
                     raise ValueError('Connection unsucessful.')
@@ -705,7 +712,7 @@ class HikCamera(object):
                     _LOGGING.debug('Stopping event stream thread for %s',
                                    self.name)
                     self.watchdog.stop()
-                    self.hik_request.close()
+                    self.hik_request_stream.close()
                     return
                 elif reset_event.is_set():
                     # We need to reset the connection.
@@ -720,7 +727,7 @@ class HikCamera(object):
                                  self.name, fail_count, (fail_count * 5) + 5, err)
                 parse_string = ""
                 self.watchdog.stop()
-                self.hik_request.close()
+                self.hik_request_stream.close()
                 time.sleep(5)
                 self.update_stale()
                 time.sleep(fail_count * 5)

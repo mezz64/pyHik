@@ -5,6 +5,7 @@ import requests
 import unittest
 
 from unittest.mock import MagicMock, patch, PropertyMock
+from requests.auth import HTTPDigestAuth
 from pyhik.hikvision import HikCamera, inject_events_into_camera
 from pyhik.constants import CONNECT_TIMEOUT, VALID_NOTIFICATION_METHODS
 
@@ -310,6 +311,125 @@ class InjectEventsTestCase(unittest.TestCase):
         self.assertEqual(len(camera.event_states["Motion"]), 2)
         channels = [sensor[1] for sensor in camera.event_states["Motion"]]
         self.assertEqual(sorted(channels), [1, 2])
+
+
+class ThreadSafetyTestCase(unittest.TestCase):
+    """Tests for thread-safe session separation between API and stream."""
+
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    @patch("pyhik.hikvision.HikCamera.get_event_triggers")
+    @patch("pyhik.hikvision.requests.Session")
+    def test_separate_sessions_created(self, mock_session_cls, mock_triggers, mock_info):
+        """Test that two separate sessions are created for API and stream."""
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        mock_triggers.return_value = {}
+
+        api_session = MagicMock(name="api_session")
+        stream_session = MagicMock(name="stream_session")
+        api_session.get.return_value = MagicMock(status_code=requests.codes.not_found)
+        mock_session_cls.side_effect = [api_session, stream_session]
+
+        camera = HikCamera(host="localhost")
+
+        # requests.Session() should be called twice
+        self.assertEqual(mock_session_cls.call_count, 2)
+
+        # The two sessions should be different objects
+        self.assertIsNot(camera.hik_request, camera.hik_request_stream)
+        self.assertIs(camera.hik_request, api_session)
+        self.assertIs(camera.hik_request_stream, stream_session)
+
+        # Both should have auth and headers configured
+        api_session.headers.update.assert_called_once()
+        stream_session.headers.update.assert_called_once()
+
+    @patch("pyhik.hikvision.requests.Session")
+    def test_digest_auth_updates_both_sessions(self, mock_session_cls):
+        """Test that auth negotiation falling back to digest updates both sessions."""
+        api_session = MagicMock(name="api_session")
+        stream_session = MagicMock(name="stream_session")
+        mock_session_cls.side_effect = [api_session, stream_session]
+
+        # First call returns 401 (basic auth failed), second call succeeds
+        device_info_xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<DeviceInfo xmlns="http://www.hikvision.com/ver20/XMLSchema">'
+            '<deviceName>TestCam</deviceName>'
+            '<deviceID>12345678901</deviceID>'
+            '</DeviceInfo>'
+        )
+        unauthorized_resp = MagicMock(status_code=requests.codes.unauthorized)
+        ok_resp = MagicMock(status_code=requests.codes.ok, text=device_info_xml)
+        # get_device_info: 1st call → 401, 2nd call (digest) → 200
+        # get_event_triggers: → not_found (skip)
+        # get_motion_detection: → not_found (skip)
+        not_found_resp = MagicMock(status_code=requests.codes.not_found)
+        api_session.get.side_effect = [unauthorized_resp, ok_resp, not_found_resp, not_found_resp, not_found_resp]
+
+        camera = HikCamera(host="localhost", usr="admin", pwd="pass")
+
+        # Both sessions should have been switched to digest auth
+        self.assertIsInstance(api_session.auth, HTTPDigestAuth)
+        self.assertIsInstance(stream_session.auth, HTTPDigestAuth)
+
+    @patch("pyhik.hikvision.HikCamera.get_motion_detection")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    @patch("pyhik.hikvision.HikCamera.get_event_triggers")
+    @patch("pyhik.hikvision.requests.Session")
+    def test_snapshot_uses_api_session(
+        self, mock_session_cls, mock_triggers, mock_info, mock_motion
+    ):
+        """Test that get_snapshot uses the API session, not the stream session."""
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        mock_triggers.return_value = {}
+
+        api_session = MagicMock(name="api_session")
+        stream_session = MagicMock(name="stream_session")
+        mock_session_cls.side_effect = [api_session, stream_session]
+
+        camera = HikCamera(host="localhost")
+
+        # Reset call counts from initialization, then set up snapshot response
+        api_session.get.reset_mock()
+        api_session.get.return_value = MagicMock(
+            status_code=requests.codes.ok, content=b"image_data"
+        )
+
+        result = camera.get_snapshot()
+
+        # API session should have been called for the snapshot
+        snapshot_url = "localhost:80/ISAPI/Streaming/channels/1/picture"
+        api_session.get.assert_called_with(snapshot_url, timeout=10)
+
+        # Stream session should NOT have been called for the snapshot
+        stream_session.get.assert_not_called()
+        self.assertEqual(result, b"image_data")
+
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    @patch("pyhik.hikvision.HikCamera.get_event_triggers")
+    @patch("pyhik.hikvision.requests.Session")
+    def test_closing_stream_session_does_not_affect_api_session(
+        self, mock_session_cls, mock_triggers, mock_info
+    ):
+        """Test that closing the stream session doesn't close the API session."""
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        mock_triggers.return_value = {}
+
+        api_session = MagicMock(name="api_session")
+        stream_session = MagicMock(name="stream_session")
+        api_session.get.return_value = MagicMock(status_code=requests.codes.not_found)
+        mock_session_cls.side_effect = [api_session, stream_session]
+
+        camera = HikCamera(host="localhost")
+
+        # Simulate what alert_stream does on reconnect
+        camera.hik_request_stream.close()
+
+        # Stream session should be closed
+        stream_session.close.assert_called_once()
+
+        # API session should NOT be closed
+        api_session.close.assert_not_called()
 
 
 if __name__ == "__main__":
