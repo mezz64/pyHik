@@ -260,6 +260,34 @@ class HikCamera(object):
 
         self.motion_detection = enable
 
+    def get_video_encryption(self):
+        """Check if video encryption is enabled on the device."""
+        url = '%s/ISAPI/Security/videoEncryption' % self.root_url
+
+        try:
+            response = self.hik_request.get(url, timeout=CONNECT_TIMEOUT)
+        except (requests.exceptions.RequestException,
+                requests.exceptions.ConnectionError) as err:
+            _LOGGING.debug('Unable to fetch videoEncryption, error: %s', err)
+            return None
+
+        if response.status_code != requests.codes.ok:
+            _LOGGING.debug('Video encryption endpoint not available.')
+            return None
+
+        try:
+            tree = ET.fromstring(response.text)
+        except ET.ParseError:
+            _LOGGING.debug('Unable to parse videoEncryption response.')
+            return None
+
+        # Look for <enabled> element in any namespace
+        for elem in tree.iter():
+            if elem.tag.rpartition('}')[2] == 'enabled':
+                return elem.text is not None and elem.text.lower() == 'true'
+
+        return None
+
     def get_snapshot(self, channel=1):
         """
         Fetch a snapshot image from the camera.
