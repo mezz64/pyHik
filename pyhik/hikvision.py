@@ -154,6 +154,8 @@ class HikCamera(object):
         # Callbacks
         self._updateCallbacks = []
 
+        self._stream_connected = False
+
         self.initialize()
 
     @property
@@ -181,6 +183,25 @@ class HikCamera(object):
         """Return current state of motion detection property"""
         return self.motion_detection
 
+    @property
+    def stream_connected(self):
+        """Return True if the event stream is currently connected."""
+        return self._stream_connected
+
+    def _set_stream_connected(self, connected):
+        """Update stream connection state and notify callbacks on changes."""
+        if self._stream_connected == connected:
+            return
+        self._stream_connected = connected
+        if connected:
+            _LOGGING.info('%s event stream connected', self.name)
+        else:
+            _LOGGING.info('%s event stream disconnected', self.name)
+        # Notify every registered callback so consumers can update
+        # availability for all their sensors.
+        for callback, sensor in self._updateCallbacks:
+            callback(sensor)
+
     def get_motion_detection(self):
         """Fetch current motion state from camera"""
         url = ('%s/ISAPI/System/Video/inputs/'
@@ -207,19 +228,24 @@ class HikCamera(object):
 
         try:
             tree = ET.fromstring(response.text)
-            self.fetch_namespace(tree, CONTEXT_MOTION)
-            enabled = tree.find(self.element_query('enabled', CONTEXT_MOTION))
-
-            if enabled is not None:
-                self._motion_detection_xml = tree
-            self.motion_detection = {'true': True, 'false': False}[enabled.text]
-            return self.motion_detection
-
-        except AttributeError as err:
-            _LOGGING.error('Entire response: %s', response.text)
-            _LOGGING.error('There was a problem: %s', err)
+        except ET.ParseError as err:
+            _LOGGING.debug('Malformed motion detection response: %s', err)
             self.motion_detection = None
             return self.motion_detection
+
+        self.fetch_namespace(tree, CONTEXT_MOTION)
+        enabled = tree.find(self.element_query('enabled', CONTEXT_MOTION))
+
+        if enabled is None:
+            # NVRs and some cameras don't support this endpoint and return
+            # a different document. Not an error, just unsupported.
+            _LOGGING.debug('Device does not report motion detection state.')
+            self.motion_detection = None
+            return self.motion_detection
+
+        self._motion_detection_xml = tree
+        self.motion_detection = {'true': True, 'false': False}.get(enabled.text)
+        return self.motion_detection
 
     def enable_motion_detection(self):
         """Enable motion detection"""
@@ -438,19 +464,27 @@ class HikCamera(object):
         events_available = self.get_event_triggers(VALID_NOTIFICATION_METHODS)
         if events_available:
             for event, channel_list in events_available.items():
+                # Tracking videoloss events causes problems since they are used
+                # as the watchdog so ignore them if they are enabled in the triggers.
+                if event.lower() == 'videoloss':
+                    continue
+                try:
+                    etype = SENSOR_MAP[event.lower()]
+                except KeyError:
+                    # Sensor type doesn't have a known friendly name
+                    # We can't reliably handle it at this time...
+                    _LOGGING.warning(
+                        'Sensor type "%s" is unsupported.', event)
+                    continue
                 for channel in channel_list:
-                    try:
-                        # Tracking videoloss events causes problems since they are used
-                        # as the watchdog so ignore them if they are enabled in the triggers.
-                        if event.lower() != 'videoloss':
-                            self.event_states.setdefault(
-                                SENSOR_MAP[event.lower()], []).append(
-                                    [False, channel, 0, datetime.datetime.now()])
-                    except KeyError:
-                        # Sensor type doesn't have a known friendly name
-                        # We can't reliably handle it at this time...
-                        _LOGGING.warning(
-                            'Sensor type "%s" is unsupported.', event)
+                    entries = self.event_states.setdefault(etype, [])
+                    # Multiple raw event types can map to the same friendly
+                    # name (e.g. tamperdetection/shelteralarm/defocus), so
+                    # keep a single entry per (event, channel) pair.
+                    if any(entry[1] == channel for entry in entries):
+                        continue
+                    entries.append(
+                        [False, channel, 0, datetime.datetime.now(), None])
 
             _LOGGING.debug('Initialized Dictionary: %s', self.event_states)
         else:
@@ -566,10 +600,11 @@ class HikCamera(object):
             content = ET.fromstring(response.text)
             self.fetch_namespace(content, CONTEXT_TRIG)
 
-            if content[0].find(self.element_query('EventTrigger', CONTEXT_TRIG)):
+            if len(content) and content[0].find(
+                    self.element_query('EventTrigger', CONTEXT_TRIG)) is not None:
                 event_xml = content[0].findall(
                     self.element_query('EventTrigger', CONTEXT_TRIG))
-            elif content.find(self.element_query('EventTrigger', CONTEXT_TRIG)):
+            elif content.find(self.element_query('EventTrigger', CONTEXT_TRIG)) is not None:
                 # This is either an NVR or a rebadged camera
                 event_xml = content.findall(
                     self.element_query('EventTrigger', CONTEXT_TRIG))
@@ -600,7 +635,7 @@ class HikCamera(object):
                             # Field must not be an integer
                             pass
 
-                if etnotify:
+                if etnotify is not None:
                     for notifytrigger in etnotify:
                         ntype = notifytrigger.find(
                             self.element_query('notificationMethod', CONTEXT_TRIG))
@@ -609,8 +644,15 @@ class HikCamera(object):
                             # Found an event with a valid notification method
                             # Catch events with bad IDs
                             if etchannel_num == 0 : etchannel_num = 1
-                            events.setdefault(ettype.text, []) \
-                                .append(etchannel_num)
+                            channel_list = events.setdefault(ettype.text, [])
+                            # A trigger can carry several accepted notification
+                            # methods and a device can report the same event
+                            # type/channel in several triggers; only record
+                            # the channel once so each (event, channel) pair
+                            # yields a single sensor.
+                            if etchannel_num not in channel_list:
+                                channel_list.append(etchannel_num)
+                            break
 
         except (AttributeError, ET.ParseError) as err:
             _LOGGING.error(
@@ -666,13 +708,16 @@ class HikCamera(object):
                 if stream.status_code == requests.codes.not_found:
                     # Try alternate URL for stream
                     url = '%s/Event/notification/alertStream' % self.root_url
-                    stream = self.hik_request_stream.get(url, stream=True)
+                    stream = self.hik_request_stream.get(url, stream=True,
+                                                         timeout=(CONNECT_TIMEOUT,
+                                                                  READ_TIMEOUT))
 
                 if stream.status_code != requests.codes.ok:
                     raise ValueError('Connection unsucessful.')
                 else:
                     _LOGGING.debug('%s Connection Successful.', self.name)
                     fail_count = 0
+                    self._set_stream_connected(True)
                     self.watchdog.start()
 
                 for line in stream.iter_lines():
@@ -712,6 +757,7 @@ class HikCamera(object):
                     # We were asked to stop the thread so lets do so.
                     _LOGGING.debug('Stopping event stream thread for %s',
                                    self.name)
+                    self._set_stream_connected(False)
                     self.watchdog.stop()
                     self.hik_request_stream.close()
                     return
@@ -719,11 +765,19 @@ class HikCamera(object):
                     # We need to reset the connection.
                     raise ValueError('Watchdog failed.')
 
+            # RequestException also covers read timeouts, which happen when
+            # the connection silently drops; without catching them here the
+            # stream thread would die and events would stop forever.
             except (ValueError,
-                    requests.exceptions.ConnectionError,
-                    requests.exceptions.ChunkedEncodingError) as err:
+                    requests.exceptions.RequestException) as err:
                 fail_count += 1
+                watchdog_reset = reset_event.is_set()
                 reset_event.clear()
+                # A watchdog reset is routine maintenance on a quiet stream;
+                # only flag the stream as down once a reconnect also fails
+                # or the failure came from the connection itself.
+                if not watchdog_reset or fail_count > 1:
+                    self._set_stream_connected(False)
                 _LOGGING.warning('%s Connection Failed (count=%d). Waiting %ss. Err: %s',
                                  self.name, fail_count, (fail_count * 5) + 5, err)
                 parse_string = ""
@@ -767,6 +821,15 @@ class HikCamera(object):
             _LOGGING.error('Problem finding attribute: %s', err)
             return
 
+        # Optional smart-event detection target (e.g. human/vehicle). It can
+        # appear at the top level or nested in a detection region entry.
+        etarget = tree.find(
+            './/%s' % self.element_query('targetType', CONTEXT_ALERT))
+        if etarget is None:
+            etarget = tree.find(
+                './/%s' % self.element_query('detectionTarget', CONTEXT_ALERT))
+        target_type = etarget.text if etarget is not None else None
+
         # Take care of keep-alive
         if len(etype) > 0 and etype == 'Video Loss':
             self.watchdog.pet()
@@ -780,7 +843,7 @@ class HikCamera(object):
                 estate = (estate == 'active')
                 old_state = state[0]
                 attr = [estate, echid, int(ecount),
-                        datetime.datetime.now()]
+                        datetime.datetime.now(), target_type]
                 self.update_attributes(etype, echid, attr)
 
                 if estate != old_state:
@@ -801,8 +864,11 @@ class HikCamera(object):
                     if sec_elap > 5 and eprop[0] is True:
                         _LOGGING.debug('Updating stale event %s on CH(%s)',
                                        etype, eprop[1])
+                        # Keep the last detection target so consumers can
+                        # pair it with the last tripped time.
                         attr = [False, eprop[1], eprop[2],
-                                datetime.datetime.now()]
+                                datetime.datetime.now(),
+                                eprop[4] if len(eprop) > 4 else None]
                         self.update_attributes(etype, eprop[1], attr)
                         self.publish_changes(etype, eprop[1])
 
@@ -857,9 +923,10 @@ class HikCamera(object):
                     sensor[1] == channel for sensor in self.event_states[event_name]
                 )
                 if not channel_exists:
-                    # Add the event state: [is_active, channel, count, last_update_time]
+                    # Add the event state:
+                    # [is_active, channel, count, last_update_time, target_type]
                     self.event_states[event_name].append(
-                        [False, channel, 0, datetime.datetime.now()]
+                        [False, channel, 0, datetime.datetime.now(), None]
                     )
 
     def get_recording_days(self, track_id, start_date, end_date):
