@@ -284,6 +284,15 @@ class HikCamera(object):
 
         try:
             response = self.hik_request.get(url, timeout=SNAPSHOT_TIMEOUT)
+            if (self.device_type == NVR_DEVICE
+                    and response.status_code not in (
+                        requests.codes.ok,
+                        requests.codes.unauthorized,
+                        requests.codes.forbidden)):
+                url = ('%s/ISAPI/ContentMgmt/StreamingProxy/channels/'
+                       '%d/picture') % (self.root_url, stream_channel)
+                response = self.hik_request.get(
+                    url, timeout=SNAPSHOT_TIMEOUT)
         except requests.exceptions.Timeout:
             _LOGGING.warning('Timeout fetching snapshot from %s', self.name)
             return None
