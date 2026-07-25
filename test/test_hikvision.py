@@ -532,6 +532,25 @@ class DuplicateEventsTestCase(unittest.TestCase):
         self.assertEqual(sorted(tamper_channels), [1, 2])
         self.assertEqual(len(camera.event_states["Motion"]), 1)
 
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    @patch("pyhik.hikvision.HikCamera.get_event_triggers")
+    def test_initialize_skips_unsupported_types_quietly(
+            self, mock_triggers, mock_info, mock_session):
+        """Event types missing from SENSOR_MAP are skipped at debug level
+        instead of warning on every startup (home-assistant/core#174797)."""
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        mock_triggers.return_value = {"storageDetection": [1], "VMD": [1]}
+        session = mock_session.return_value
+        session.get.return_value = MagicMock(
+            status_code=requests.codes.not_found)
+
+        with self.assertNoLogs("pyhik.hikvision", level=logging.WARNING):
+            camera = HikCamera(host="localhost")
+
+        self.assertEqual(set(camera.event_states), {"Motion"})
+        self.assertEqual(len(camera.event_states["Motion"]), 1)
+
 
 ALERT_XML = """<EventNotificationAlert \
 xmlns="http://www.hikvision.com/ver20/XMLSchema" version="2.0">
@@ -590,6 +609,19 @@ class ProcessStreamTestCase(unittest.TestCase):
         camera.process_stream(tree)
 
         self.assertIsNone(camera.fetch_attributes("Motion", 1)[4])
+
+    def test_process_stream_ignores_unsupported_event_type(self):
+        """Unknown event types on the alert stream are dropped without an
+        error log."""
+        camera = self._make_camera()
+        tree = ET.fromstring(ALERT_XML.format(extra="").replace(
+            "<eventType>VMD</eventType>",
+            "<eventType>storageDetection</eventType>"))
+
+        with self.assertNoLogs("pyhik.hikvision", level=logging.ERROR):
+            camera.process_stream(tree)
+
+        self.assertFalse(camera.fetch_attributes("Motion", 1)[0])
 
 
 class StreamConnectedTestCase(unittest.TestCase):

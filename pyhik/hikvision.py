@@ -473,7 +473,7 @@ class HikCamera(object):
                 except KeyError:
                     # Sensor type doesn't have a known friendly name
                     # We can't reliably handle it at this time...
-                    _LOGGING.warning(
+                    _LOGGING.debug(
                         'Sensor type "%s" is unsupported.', event)
                     continue
                 for channel in channel_list:
@@ -794,13 +794,21 @@ class HikCamera(object):
             self.fetch_namespace(tree, CONTEXT_ALERT)
 
         try:
-            etype = SENSOR_MAP[tree.find(
-                self.element_query('eventType', CONTEXT_ALERT)).text.lower()]
-            
+            raw_etype = tree.find(
+                self.element_query('eventType', CONTEXT_ALERT)).text
+            try:
+                etype = SENSOR_MAP[raw_etype.lower()]
+            except KeyError:
+                # Event type we don't model (e.g. storageDetection); skip
+                # quietly rather than logging an error for every packet.
+                _LOGGING.debug('Unsupported event type "%s", ignoring.',
+                               raw_etype)
+                return
+
             # Since this pasing is different and not really usefull for now, just return without error.
             if len(etype) > 0 and etype == 'Ongoing Events':
                 return
-            
+
             estate = tree.find(
                 self.element_query('eventState', CONTEXT_ALERT)).text
 
