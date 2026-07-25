@@ -3,6 +3,7 @@
 import logging
 import requests
 import unittest
+import xml.etree.ElementTree as ET
 
 from unittest.mock import MagicMock, patch, PropertyMock
 from requests.auth import HTTPDigestAuth
@@ -64,8 +65,27 @@ class HikvisionTestCase(unittest.TestCase):
         self.assertIsNotNone(device)
         self.assertTrue(device.current_motion_detection_state)
 
+        # Unsupported devices (e.g. NVRs) return a document without an
+        # 'enabled' element; this must not raise or log an error.
+        get.reset_mock()
+        mock = get.return_value
+        type(mock).ok = PropertyMock(return_value=True)
+        type(mock).status_code = PropertyMock(return_value=requests.codes.ok)
+        type(mock).text = PropertyMock(
+            return_value='<SomeOtherDocument '
+                         'xmlns="http://www.hikvision.com/ver20/XMLSchema"/>'
+        )
+        unsupported_device = HikCamera(host="localhost")
+        self.assertIsNone(unsupported_device.current_motion_detection_state)
+
+        # Non-XML responses must not raise either.
+        type(mock).text = PropertyMock(return_value='not xml at all')
+        unsupported_device = HikCamera(host="localhost")
+        self.assertIsNone(unsupported_device.current_motion_detection_state)
+
         # Enable calls put with the expected data
         self.set_motion_detection_state(get, True)
+        device = HikCamera(host="localhost")
         session.put.return_value = MagicMock(status_code=requests.codes.ok, ok=True)
         device.enable_motion_detection()
         session.put.assert_called_once_with(url, data=XML.format("true").encode(), timeout=CONNECT_TIMEOUT)
@@ -430,6 +450,203 @@ class ThreadSafetyTestCase(unittest.TestCase):
 
         # API session should NOT be closed
         api_session.close.assert_not_called()
+# XML with one trigger carrying several accepted notification methods and a
+# second trigger repeating the same event type and channel.
+DUPLICATE_TRIGGERS_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<EventTriggerList xmlns="http://www.hikvision.com/ver20/XMLSchema" version="2.0">
+    <EventTrigger version="2.0">
+        <id>1</id>
+        <eventType>VMD</eventType>
+        <videoInputChannelID>1</videoInputChannelID>
+        <EventTriggerNotificationList>
+            <EventTriggerNotification>
+                <id>1</id>
+                <notificationMethod>center</notificationMethod>
+            </EventTriggerNotification>
+            <EventTriggerNotification>
+                <id>2</id>
+                <notificationMethod>HTTP</notificationMethod>
+            </EventTriggerNotification>
+            <EventTriggerNotification>
+                <id>3</id>
+                <notificationMethod>record</notificationMethod>
+            </EventTriggerNotification>
+        </EventTriggerNotificationList>
+    </EventTrigger>
+    <EventTrigger version="2.0">
+        <id>2</id>
+        <eventType>VMD</eventType>
+        <videoInputChannelID>1</videoInputChannelID>
+        <EventTriggerNotificationList>
+            <EventTriggerNotification>
+                <id>1</id>
+                <notificationMethod>HTTP</notificationMethod>
+            </EventTriggerNotification>
+        </EventTriggerNotificationList>
+    </EventTrigger>
+</EventTriggerList>"""
+
+
+class DuplicateEventsTestCase(unittest.TestCase):
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    def test_get_event_triggers_deduplicates_channels(
+            self, mock_info, mock_session):
+        """A channel is reported once per event type regardless of how many
+        notification methods or duplicate triggers reference it."""
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        session = mock_session.return_value
+        response = MagicMock()
+        response.status_code = requests.codes.ok
+        response.text = DUPLICATE_TRIGGERS_XML
+        session.get.return_value = response
+
+        camera = HikCamera(host="localhost")
+        events = camera.get_event_triggers(
+            notification_methods=VALID_NOTIFICATION_METHODS)
+
+        self.assertEqual(events["VMD"], [1])
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    @patch("pyhik.hikvision.HikCamera.get_event_triggers")
+    def test_initialize_deduplicates_sensor_map_collisions(
+            self, mock_triggers, mock_info, mock_session):
+        """Raw event types mapping to the same friendly name must yield a
+        single state entry per channel."""
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        mock_triggers.return_value = {
+            "tamperdetection": [1],
+            "shelteralarm": [1, 2],
+            "defocus": [1],
+            "VMD": [1],
+        }
+        session = mock_session.return_value
+        session.get.return_value = MagicMock(
+            status_code=requests.codes.not_found)
+
+        camera = HikCamera(host="localhost")
+
+        tamper_channels = [
+            entry[1] for entry in camera.event_states["Tamper Detection"]]
+        self.assertEqual(sorted(tamper_channels), [1, 2])
+        self.assertEqual(len(camera.event_states["Motion"]), 1)
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    @patch("pyhik.hikvision.HikCamera.get_event_triggers")
+    def test_initialize_skips_unsupported_types_quietly(
+            self, mock_triggers, mock_info, mock_session):
+        """Event types missing from SENSOR_MAP are skipped at debug level
+        instead of warning on every startup (home-assistant/core#174797)."""
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        mock_triggers.return_value = {"storageDetection": [1], "VMD": [1]}
+        session = mock_session.return_value
+        session.get.return_value = MagicMock(
+            status_code=requests.codes.not_found)
+
+        with self.assertNoLogs("pyhik.hikvision", level=logging.WARNING):
+            camera = HikCamera(host="localhost")
+
+        self.assertEqual(set(camera.event_states), {"Motion"})
+        self.assertEqual(len(camera.event_states["Motion"]), 1)
+
+
+ALERT_XML = """<EventNotificationAlert \
+xmlns="http://www.hikvision.com/ver20/XMLSchema" version="2.0">
+<ipAddress>192.168.1.100</ipAddress>
+<protocolType>HTTP</protocolType>
+<channelID>1</channelID>
+<dateTime>2026-06-08T12:00:00+00:00</dateTime>
+<activePostCount>1</activePostCount>
+<eventType>VMD</eventType>
+<eventState>active</eventState>
+<eventDescription>Motion alarm</eventDescription>
+{extra}
+</EventNotificationAlert>"""
+
+
+class ProcessStreamTestCase(unittest.TestCase):
+    @staticmethod
+    def _make_camera():
+        with patch("pyhik.hikvision.requests.Session") as mock_session, \
+                patch("pyhik.hikvision.HikCamera.get_device_info") as mock_info, \
+                patch("pyhik.hikvision.HikCamera.get_event_triggers") as mock_triggers:
+            mock_info.return_value = {
+                "deviceName": "Test", "deviceID": "12345678901"}
+            mock_triggers.return_value = {"VMD": [1]}
+            session = mock_session.return_value
+            session.get.return_value = MagicMock(
+                status_code=requests.codes.not_found)
+            return HikCamera(host="localhost")
+
+    def test_process_stream_parses_target_type(self):
+        """targetType from the alert XML is exposed in the attributes."""
+        camera = self._make_camera()
+        tree = ET.fromstring(
+            ALERT_XML.format(extra="<targetType>human</targetType>"))
+        camera.process_stream(tree)
+
+        attributes = camera.fetch_attributes("Motion", 1)
+        self.assertTrue(attributes[0])
+        self.assertEqual(attributes[4], "human")
+
+    def test_process_stream_parses_nested_detection_target(self):
+        """detectionTarget nested in a region entry is used as fallback."""
+        camera = self._make_camera()
+        tree = ET.fromstring(ALERT_XML.format(
+            extra="<DetectionRegionList><DetectionRegionEntry>"
+                  "<detectionTarget>vehicle</detectionTarget>"
+                  "</DetectionRegionEntry></DetectionRegionList>"))
+        camera.process_stream(tree)
+
+        self.assertEqual(camera.fetch_attributes("Motion", 1)[4], "vehicle")
+
+    def test_process_stream_without_target_type(self):
+        """Alerts without a detection target leave the attribute as None."""
+        camera = self._make_camera()
+        tree = ET.fromstring(ALERT_XML.format(extra=""))
+        camera.process_stream(tree)
+
+        self.assertIsNone(camera.fetch_attributes("Motion", 1)[4])
+
+    def test_process_stream_ignores_unsupported_event_type(self):
+        """Unknown event types on the alert stream are dropped without an
+        error log."""
+        camera = self._make_camera()
+        tree = ET.fromstring(ALERT_XML.format(extra="").replace(
+            "<eventType>VMD</eventType>",
+            "<eventType>storageDetection</eventType>"))
+
+        with self.assertNoLogs("pyhik.hikvision", level=logging.ERROR):
+            camera.process_stream(tree)
+
+        self.assertFalse(camera.fetch_attributes("Motion", 1)[0])
+
+
+class StreamConnectedTestCase(unittest.TestCase):
+    def test_set_stream_connected_notifies_all_callbacks(self):
+        """Connection state changes notify every registered callback once."""
+        camera = ProcessStreamTestCase._make_camera()
+        motion_callback = MagicMock()
+        tamper_callback = MagicMock()
+        camera.add_update_callback(motion_callback, "id.Motion.1")
+        camera.add_update_callback(tamper_callback, "id.Tamper Detection.1")
+
+        self.assertFalse(camera.stream_connected)
+
+        camera._set_stream_connected(True)
+        self.assertTrue(camera.stream_connected)
+        motion_callback.assert_called_once_with("id.Motion.1")
+        tamper_callback.assert_called_once_with("id.Tamper Detection.1")
+
+        # No change, no extra notifications
+        camera._set_stream_connected(True)
+        motion_callback.assert_called_once_with("id.Motion.1")
+
+        camera._set_stream_connected(False)
+        self.assertFalse(camera.stream_connected)
+        self.assertEqual(motion_callback.call_count, 2)
 
 
 if __name__ == "__main__":
