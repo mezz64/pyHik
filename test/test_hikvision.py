@@ -4,10 +4,10 @@ import logging
 import requests
 import unittest
 
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import call, MagicMock, patch, PropertyMock
 from requests.auth import HTTPDigestAuth
 from pyhik.hikvision import HikCamera, inject_events_into_camera
-from pyhik.constants import CONNECT_TIMEOUT, VALID_NOTIFICATION_METHODS
+from pyhik.constants import CONNECT_TIMEOUT, NVR_DEVICE, VALID_NOTIFICATION_METHODS
 
 XML = """<MotionDetection xmlns="http://www.hikvision.com/ver20/XMLSchema" version="2.0">
     <enabled>{}</enabled>
@@ -449,6 +449,63 @@ class ThreadSafetyTestCase(unittest.TestCase):
         # Stream session should NOT have been called for the snapshot
         stream_session.get.assert_not_called()
         self.assertEqual(result, b"image_data")
+
+    @staticmethod
+    def nvr_camera():
+        """Create an NVR without running unrelated initialization requests."""
+        camera = object.__new__(HikCamera)
+        camera.device_type = NVR_DEVICE
+        camera.root_url = "localhost:80"
+        camera.name = "Test"
+        camera.hik_request = MagicMock(name="api_session")
+        return camera
+
+    def test_nvr_snapshot_falls_back_to_streaming_proxy(self):
+        """Test that NVR snapshots fall back to the streaming proxy endpoint."""
+        camera = self.nvr_camera()
+        camera.hik_request.get.side_effect = [
+            MagicMock(status_code=requests.codes.bad_request),
+            MagicMock(status_code=requests.codes.ok, content=b"proxy_image"),
+        ]
+
+        self.assertEqual(camera.get_snapshot(channel=2), b"proxy_image")
+        self.assertEqual(
+            camera.hik_request.get.call_args_list,
+            [
+                call(
+                    "localhost:80/ISAPI/Streaming/channels/201/picture",
+                    timeout=10,
+                ),
+                call(
+                    "localhost:80/ISAPI/ContentMgmt/StreamingProxy/channels/201/picture",
+                    timeout=10,
+                ),
+            ],
+        )
+
+    def test_nvr_snapshot_keeps_working_streaming_endpoint(self):
+        """Test that a working NVR snapshot endpoint is not retried."""
+        camera = self.nvr_camera()
+        camera.hik_request.get.return_value = MagicMock(
+            status_code=requests.codes.ok, content=b"legacy_image"
+        )
+
+        self.assertEqual(camera.get_snapshot(), b"legacy_image")
+        camera.hik_request.get.assert_called_once_with(
+            "localhost:80/ISAPI/Streaming/channels/101/picture", timeout=10
+        )
+
+    def test_nvr_snapshot_does_not_fall_back_after_auth_failure(self):
+        """Test that snapshot authentication failures are not retried."""
+        camera = self.nvr_camera()
+        camera.hik_request.get.return_value = MagicMock(
+            status_code=requests.codes.unauthorized
+        )
+
+        self.assertIsNone(camera.get_snapshot())
+        camera.hik_request.get.assert_called_once_with(
+            "localhost:80/ISAPI/Streaming/channels/101/picture", timeout=10
+        )
 
     @patch("pyhik.hikvision.HikCamera.get_device_info")
     @patch("pyhik.hikvision.HikCamera.get_event_triggers")
