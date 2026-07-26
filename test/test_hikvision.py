@@ -49,7 +49,7 @@ class HikvisionTestCase(unittest.TestCase):
 
         session = args[-1].return_value
         get = session.get
-        url = "localhost:80/ISAPI/System/Video/inputs/channels/1/motionDetection"
+        url = "http://localhost:80/ISAPI/System/Video/inputs/channels/1/motionDetection"
 
         # Motion detection disabled
         self.set_motion_detection_state(get, False)
@@ -68,7 +68,8 @@ class HikvisionTestCase(unittest.TestCase):
         self.set_motion_detection_state(get, True)
         session.put.return_value = MagicMock(status_code=requests.codes.ok, ok=True)
         device.enable_motion_detection()
-        session.put.assert_called_once_with(url, data=XML.format("true").encode(), timeout=CONNECT_TIMEOUT)
+        put_url = "http://localhost:80/ISAPI/System/Video/inputs/channels/1/motionDetection"
+        session.put.assert_called_once_with(put_url, data=XML.format("true").encode(), timeout=CONNECT_TIMEOUT)
 
         # Disable
         def change_get_response(url, data,timeout):
@@ -240,6 +241,50 @@ class GetEventTriggersTestCase(unittest.TestCase):
         # Should find VMD on channels 1, 4, 5
         self.assertIn("VMD", events)
         self.assertEqual(sorted(events["VMD"]), [1, 4, 5])
+
+
+class URLParsingTestCase(unittest.TestCase):
+    """Test that URL parsing handles various host formats correctly."""
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.initialize")
+    def test_plain_host(self, mock_init, mock_session):
+        """Test host as plain IP address."""
+        camera = HikCamera(host="192.168.1.100", port=80)
+        self.assertEqual(camera.host, "192.168.1.100")
+        self.assertEqual(camera.root_url, "http://192.168.1.100:80")
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.initialize")
+    def test_host_with_scheme(self, mock_init, mock_session):
+        """Test host as URL with http scheme."""
+        camera = HikCamera(host="http://192.168.1.100", port=80)
+        self.assertEqual(camera.host, "192.168.1.100")
+        self.assertEqual(camera.root_url, "http://192.168.1.100:80")
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.initialize")
+    def test_host_with_scheme_and_port(self, mock_init, mock_session):
+        """Test host as URL with scheme and port - port in URL takes precedence."""
+        camera = HikCamera(host="http://192.168.1.100:8080", port=80)
+        self.assertEqual(camera.host, "192.168.1.100")
+        self.assertEqual(camera.root_url, "http://192.168.1.100:8080")
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.initialize")
+    def test_host_with_https(self, mock_init, mock_session):
+        """Test host with https scheme."""
+        camera = HikCamera(host="https://192.168.1.100", port=443)
+        self.assertEqual(camera.host, "192.168.1.100")
+        self.assertEqual(camera.root_url, "https://192.168.1.100:443")
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.initialize")
+    def test_hostname(self, mock_init, mock_session):
+        """Test with hostname instead of IP."""
+        camera = HikCamera(host="camera.local", port=80)
+        self.assertEqual(camera.host, "camera.local")
+        self.assertEqual(camera.root_url, "http://camera.local:80")
 
 
 class InjectEventsTestCase(unittest.TestCase):
