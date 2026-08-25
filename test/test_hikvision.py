@@ -2,6 +2,7 @@
 
 import logging
 import requests
+import threading
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -657,6 +658,42 @@ class DuplicateChannelsTestCase(unittest.TestCase):
             entry[1] for entry in camera.event_states["Tamper Detection"]]
         self.assertEqual(sorted(tamper_channels), [1, 2])
         self.assertEqual(len(camera.event_states["Motion"]), 1)
+
+
+class StopLoop(Exception):
+    """Raised from a patched sleep to leave alert_stream's endless loop."""
+
+
+class StreamReliabilityTestCase(unittest.TestCase):
+    @patch("pyhik.hikvision.time.sleep")
+    def test_read_timeout_does_not_kill_the_thread(self, mock_sleep):
+        """A read timeout is how a silently dropped connection surfaces. If it
+        escapes the loop the thread dies and events stop for good."""
+        camera = make_camera()
+        camera.hik_request_stream = MagicMock()
+        camera.hik_request_stream.get.side_effect = \
+            requests.exceptions.ReadTimeout("read timed out")
+        # Leave the retry loop rather than sleeping through the backoff.
+        mock_sleep.side_effect = [None, StopLoop]
+
+        with self.assertRaises(StopLoop):
+            camera.alert_stream(threading.Event(), threading.Event())
+
+    @patch("pyhik.hikvision.time.sleep")
+    def test_alternate_stream_url_has_a_timeout(self, mock_sleep):
+        """Without a timeout the fallback request can block the thread
+        forever on a device that accepts the connection and never answers."""
+        camera = make_camera()
+        camera.hik_request_stream = MagicMock()
+        camera.hik_request_stream.get.return_value = MagicMock(
+            status_code=requests.codes.not_found)
+        mock_sleep.side_effect = [None, StopLoop]
+
+        with self.assertRaises(StopLoop):
+            camera.alert_stream(threading.Event(), threading.Event())
+
+        alternate_call = camera.hik_request_stream.get.call_args_list[1]
+        self.assertIn("timeout", alternate_call.kwargs)
 
 
 if __name__ == "__main__":

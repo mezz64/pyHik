@@ -726,7 +726,9 @@ class HikCamera(object):
                 if stream.status_code == requests.codes.not_found:
                     # Try alternate URL for stream
                     url = '%s/Event/notification/alertStream' % self.root_url
-                    stream = self.hik_request_stream.get(url, stream=True)
+                    stream = self.hik_request_stream.get(url, stream=True,
+                                                         timeout=(CONNECT_TIMEOUT,
+                                                                  READ_TIMEOUT))
 
                 if stream.status_code != requests.codes.ok:
                     raise ValueError('Connection unsucessful.')
@@ -779,9 +781,12 @@ class HikCamera(object):
                     # We need to reset the connection.
                     raise ValueError('Watchdog failed.')
 
+            # RequestException is the base class of every requests error and
+            # covers read timeouts, which is how a silently dropped connection
+            # surfaces. Anything not caught here kills the stream thread and
+            # events stop for good until the integration is reloaded.
             except (ValueError,
-                    requests.exceptions.ConnectionError,
-                    requests.exceptions.ChunkedEncodingError) as err:
+                    requests.exceptions.RequestException) as err:
                 fail_count += 1
                 reset_event.clear()
                 _LOGGING.warning('%s Connection Failed (count=%d). Waiting %ss. Err: %s',
