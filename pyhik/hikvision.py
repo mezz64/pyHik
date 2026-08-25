@@ -495,8 +495,14 @@ class HikCamera(object):
                     _LOGGING.debug('Sensor type "%s" is unsupported.', event)
                     continue
                 for channel in channel_list:
-                    self.event_states.setdefault(etype, []).append(
-                        [False, channel, 0, datetime.datetime.now()])
+                    # Several raw event types can map to the same friendly
+                    # name (tamperdetection, shelteralarm and defocus all mean
+                    # "Tamper Detection"), so keep a single entry per
+                    # (event, channel) pair.
+                    entries = self.event_states.setdefault(etype, [])
+                    if not any(entry[1] == channel for entry in entries):
+                        entries.append(
+                            [False, channel, 0, datetime.datetime.now()])
 
             _LOGGING.debug('Initialized Dictionary: %s', self.event_states)
         else:
@@ -612,10 +618,11 @@ class HikCamera(object):
             content = ET.fromstring(response.text)
             self.fetch_namespace(content, CONTEXT_TRIG)
 
-            if content[0].find(self.element_query('EventTrigger', CONTEXT_TRIG)):
+            if len(content) and content[0].find(
+                    self.element_query('EventTrigger', CONTEXT_TRIG)) is not None:
                 event_xml = content[0].findall(
                     self.element_query('EventTrigger', CONTEXT_TRIG))
-            elif content.find(self.element_query('EventTrigger', CONTEXT_TRIG)):
+            elif content.find(self.element_query('EventTrigger', CONTEXT_TRIG)) is not None:
                 # This is either an NVR or a rebadged camera
                 event_xml = content.findall(
                     self.element_query('EventTrigger', CONTEXT_TRIG))
@@ -646,7 +653,7 @@ class HikCamera(object):
                             # Field must not be an integer
                             pass
 
-                if etnotify:
+                if etnotify is not None:
                     for notifytrigger in etnotify:
                         ntype = notifytrigger.find(
                             self.element_query('notificationMethod', CONTEXT_TRIG))
@@ -655,8 +662,15 @@ class HikCamera(object):
                             # Found an event with a valid notification method
                             # Catch events with bad IDs
                             if etchannel_num == 0 : etchannel_num = 1
-                            events.setdefault(ettype.text, []) \
-                                .append(etchannel_num)
+                            channel_list = events.setdefault(ettype.text, [])
+                            # A trigger can carry several accepted notification
+                            # methods, and a device can report the same event
+                            # type and channel in several triggers. Record the
+                            # channel once so each (event, channel) pair yields
+                            # a single sensor.
+                            if etchannel_num not in channel_list:
+                                channel_list.append(etchannel_num)
+                            break
 
         except (AttributeError, ET.ParseError) as err:
             _LOGGING.error(
