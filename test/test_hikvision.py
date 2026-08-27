@@ -587,5 +587,77 @@ class UnsupportedSensorTypeTestCase(unittest.TestCase):
         self.assertTrue(camera.fetch_attributes("Motion", 1)[0])
 
 
+# One trigger carrying several accepted notification methods, and a second
+# trigger repeating the same event type and channel.
+DUPLICATE_TRIGGERS_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<EventTriggerList xmlns="http://www.hikvision.com/ver20/XMLSchema" version="2.0">
+    <EventTrigger version="2.0">
+        <id>1</id>
+        <eventType>VMD</eventType>
+        <videoInputChannelID>1</videoInputChannelID>
+        <EventTriggerNotificationList>
+            <EventTriggerNotification>
+                <id>1</id>
+                <notificationMethod>center</notificationMethod>
+            </EventTriggerNotification>
+            <EventTriggerNotification>
+                <id>2</id>
+                <notificationMethod>HTTP</notificationMethod>
+            </EventTriggerNotification>
+            <EventTriggerNotification>
+                <id>3</id>
+                <notificationMethod>record</notificationMethod>
+            </EventTriggerNotification>
+        </EventTriggerNotificationList>
+    </EventTrigger>
+    <EventTrigger version="2.0">
+        <id>2</id>
+        <eventType>VMD</eventType>
+        <videoInputChannelID>1</videoInputChannelID>
+        <EventTriggerNotificationList>
+            <EventTriggerNotification>
+                <id>1</id>
+                <notificationMethod>HTTP</notificationMethod>
+            </EventTriggerNotification>
+        </EventTriggerNotificationList>
+    </EventTrigger>
+</EventTriggerList>"""
+
+
+class DuplicateChannelsTestCase(unittest.TestCase):
+    """Duplicate (event, channel) pairs made Home Assistant reject the whole
+    platform with "does not generate unique IDs"."""
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    def test_get_event_triggers_deduplicates_channels(
+            self, mock_info, mock_session):
+        mock_info.return_value = {
+            "deviceName": "Test", "deviceID": "12345678901"}
+        response = MagicMock()
+        response.status_code = requests.codes.ok
+        response.text = DUPLICATE_TRIGGERS_XML
+        mock_session.return_value.get.return_value = response
+
+        camera = HikCamera(host="localhost")
+        events = camera.get_event_triggers(
+            notification_methods=VALID_NOTIFICATION_METHODS)
+
+        self.assertEqual(events["VMD"], [1])
+
+    def test_initialize_deduplicates_sensor_map_collisions(self):
+        camera = make_camera({
+            "tamperdetection": [1],
+            "shelteralarm": [1, 2],
+            "defocus": [1],
+            "VMD": [1],
+        })
+
+        tamper_channels = [
+            entry[1] for entry in camera.event_states["Tamper Detection"]]
+        self.assertEqual(sorted(tamper_channels), [1, 2])
+        self.assertEqual(len(camera.event_states["Motion"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
