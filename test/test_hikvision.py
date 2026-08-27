@@ -444,7 +444,7 @@ class ThreadSafetyTestCase(unittest.TestCase):
         result = camera.get_snapshot()
 
         # API session should have been called for the snapshot
-        snapshot_url = "localhost:80/ISAPI/Streaming/channels/1/picture"
+        snapshot_url = "http://localhost:80/ISAPI/Streaming/channels/1/picture"
         api_session.get.assert_called_with(snapshot_url, timeout=10)
 
         # Stream session should NOT have been called for the snapshot
@@ -456,7 +456,7 @@ class ThreadSafetyTestCase(unittest.TestCase):
         """Create an NVR without running unrelated initialization requests."""
         camera = object.__new__(HikCamera)
         camera.device_type = NVR_DEVICE
-        camera.root_url = "localhost:80"
+        camera.root_url = "http://localhost:80"
         camera.name = "Test"
         camera.hik_request = MagicMock(name="api_session")
         return camera
@@ -474,11 +474,11 @@ class ThreadSafetyTestCase(unittest.TestCase):
             camera.hik_request.get.call_args_list,
             [
                 call(
-                    "localhost:80/ISAPI/Streaming/channels/201/picture",
+                    "http://localhost:80/ISAPI/Streaming/channels/201/picture",
                     timeout=10,
                 ),
                 call(
-                    "localhost:80/ISAPI/ContentMgmt/StreamingProxy/channels/201/picture",
+                    "http://localhost:80/ISAPI/ContentMgmt/StreamingProxy/channels/201/picture",
                     timeout=10,
                 ),
             ],
@@ -493,7 +493,7 @@ class ThreadSafetyTestCase(unittest.TestCase):
 
         self.assertEqual(camera.get_snapshot(), b"legacy_image")
         camera.hik_request.get.assert_called_once_with(
-            "localhost:80/ISAPI/Streaming/channels/101/picture", timeout=10
+            "http://localhost:80/ISAPI/Streaming/channels/101/picture", timeout=10
         )
 
     def test_nvr_snapshot_does_not_fall_back_after_auth_failure(self):
@@ -505,7 +505,7 @@ class ThreadSafetyTestCase(unittest.TestCase):
 
         self.assertIsNone(camera.get_snapshot())
         camera.hik_request.get.assert_called_once_with(
-            "localhost:80/ISAPI/Streaming/channels/101/picture", timeout=10
+            "http://localhost:80/ISAPI/Streaming/channels/101/picture", timeout=10
         )
 
     @patch("pyhik.hikvision.HikCamera.get_device_info")
