@@ -3,6 +3,7 @@
 import logging
 import requests
 import unittest
+import xml.etree.ElementTree as ET
 
 from unittest.mock import call, MagicMock, patch, PropertyMock
 from requests.auth import HTTPDigestAuth
@@ -532,6 +533,58 @@ class ThreadSafetyTestCase(unittest.TestCase):
 
         # API session should NOT be closed
         api_session.close.assert_not_called()
+
+
+ALERT_XML = """<EventNotificationAlert \
+xmlns="http://www.hikvision.com/ver20/XMLSchema" version="2.0">
+<ipAddress>192.168.1.100</ipAddress>
+<protocolType>HTTP</protocolType>
+<channelID>1</channelID>
+<dateTime>2026-06-08T12:00:00+00:00</dateTime>
+<activePostCount>1</activePostCount>
+<eventType>{etype}</eventType>
+<eventState>active</eventState>
+<eventDescription>Motion alarm</eventDescription>
+</EventNotificationAlert>"""
+
+
+def make_camera(triggers=None):
+    """Build a HikCamera with a stubbed device and event trigger list."""
+    with patch("pyhik.hikvision.requests.Session") as mock_session, \
+            patch("pyhik.hikvision.HikCamera.get_device_info") as mock_info, \
+            patch("pyhik.hikvision.HikCamera.get_event_triggers") as mock_triggers:
+        mock_info.return_value = {
+            "deviceName": "Test", "deviceID": "12345678901"}
+        mock_triggers.return_value = triggers if triggers is not None else {"VMD": [1]}
+        mock_session.return_value.get.return_value = MagicMock(
+            status_code=requests.codes.not_found)
+        return HikCamera(host="localhost")
+
+
+class UnsupportedSensorTypeTestCase(unittest.TestCase):
+    """Devices report event types pyHik doesn't model; that is normal and
+    must not log a warning on every startup or an error on every packet."""
+
+    def test_initialize_skips_unsupported_types_quietly(self):
+        with self.assertNoLogs("pyhik.hikvision", level=logging.WARNING):
+            camera = make_camera({"storageDetection": [1], "VMD": [1]})
+
+        self.assertEqual(set(camera.event_states), {"Motion"})
+
+    def test_process_stream_ignores_unsupported_event_type(self):
+        camera = make_camera()
+        tree = ET.fromstring(ALERT_XML.format(etype="storageDetection"))
+
+        with self.assertNoLogs("pyhik.hikvision", level=logging.ERROR):
+            camera.process_stream(tree)
+
+        self.assertFalse(camera.fetch_attributes("Motion", 1)[0])
+
+    def test_process_stream_still_handles_known_event_type(self):
+        camera = make_camera()
+        camera.process_stream(ET.fromstring(ALERT_XML.format(etype="VMD")))
+
+        self.assertTrue(camera.fetch_attributes("Motion", 1)[0])
 
 
 if __name__ == "__main__":
