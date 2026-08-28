@@ -214,19 +214,24 @@ class HikCamera(object):
 
         try:
             tree = ET.fromstring(response.text)
-            self.fetch_namespace(tree, CONTEXT_MOTION)
-            enabled = tree.find(self.element_query('enabled', CONTEXT_MOTION))
-
-            if enabled is not None:
-                self._motion_detection_xml = tree
-            self.motion_detection = {'true': True, 'false': False}[enabled.text]
-            return self.motion_detection
-
-        except AttributeError as err:
-            _LOGGING.error('Entire response: %s', response.text)
-            _LOGGING.error('There was a problem: %s', err)
+        except ET.ParseError as err:
+            _LOGGING.debug('Malformed motion detection response: %s', err)
             self.motion_detection = None
             return self.motion_detection
+
+        self.fetch_namespace(tree, CONTEXT_MOTION)
+        enabled = tree.find(self.element_query('enabled', CONTEXT_MOTION))
+
+        if enabled is None:
+            # NVRs and some cameras answer 200 with a different document.
+            # They don't support the endpoint; that isn't an error.
+            _LOGGING.debug('Device does not report motion detection state.')
+            self.motion_detection = None
+            return self.motion_detection
+
+        self._motion_detection_xml = tree
+        self.motion_detection = {'true': True, 'false': False}.get(enabled.text)
+        return self.motion_detection
 
     def enable_motion_detection(self):
         """Enable motion detection"""

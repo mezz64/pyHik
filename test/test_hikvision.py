@@ -837,6 +837,40 @@ class DownloadRecordingTestCase(unittest.TestCase):
         list(camera.download_recording("rtsp://test/uri", chunk_size=1024))
 
         mock_response.iter_content.assert_called_once_with(chunk_size=1024)
+        
+        
+class MotionDetectionUnsupportedTestCase(unittest.TestCase):
+    """NVRs answer the motionDetection endpoint with 200 and a document that
+    has no 'enabled' element. That is unsupported, not an error."""
+
+    @staticmethod
+    def _camera_answering(text):
+        with patch("pyhik.hikvision.requests.Session") as mock_session, \
+                patch("pyhik.hikvision.HikCamera.get_device_info") as mock_info, \
+                patch("pyhik.hikvision.HikCamera.get_event_triggers") as mock_triggers:
+            mock_info.return_value = {
+                "deviceName": "Test", "deviceID": "12345678901"}
+            mock_triggers.return_value = {"VMD": [1]}
+            response = MagicMock()
+            response.status_code = requests.codes.ok
+            response.ok = True
+            response.text = text
+            mock_session.return_value.get.return_value = response
+            return HikCamera(host="localhost")
+
+    def test_document_without_enabled_element(self):
+        with self.assertNoLogs("pyhik.hikvision", level=logging.ERROR):
+            camera = self._camera_answering(
+                '<SomeOtherDocument '
+                'xmlns="http://www.hikvision.com/ver20/XMLSchema"/>')
+
+        self.assertIsNone(camera.current_motion_detection_state)
+
+    def test_response_that_is_not_xml(self):
+        with self.assertNoLogs("pyhik.hikvision", level=logging.ERROR):
+            camera = self._camera_answering("not xml at all")
+
+        self.assertIsNone(camera.current_motion_detection_state)
 
 
 if __name__ == "__main__":
