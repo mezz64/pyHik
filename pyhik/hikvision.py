@@ -38,9 +38,9 @@ from pyhik.watchdog import Watchdog
 from pyhik.constants import (
     DEFAULT_PORT, DEFAULT_RTSP_PORT, DEFAULT_HEADERS, XML_NAMESPACE, SENSOR_MAP,
     CAM_DEVICE, NVR_DEVICE, CONNECT_TIMEOUT, READ_TIMEOUT, SNAPSHOT_TIMEOUT,
-    RECORDING_SEARCH_TIMEOUT, CONTEXT_INFO, CONTEXT_TRIG, CONTEXT_MOTION,
-    CONTEXT_ALERT, CHANNEL_NAMES, ID_TYPES, VALID_NOTIFICATION_METHODS,
-    __version__)
+    RECORDING_SEARCH_TIMEOUT, DOWNLOAD_TIMEOUT, CONTEXT_INFO, CONTEXT_TRIG,
+    CONTEXT_MOTION, CONTEXT_ALERT, CHANNEL_NAMES, ID_TYPES,
+    VALID_NOTIFICATION_METHODS, __version__)
 
 # Register the default namespace to avoid ns0: prefixes in serialized XML
 ET.register_namespace('', XML_NAMESPACE)
@@ -214,19 +214,24 @@ class HikCamera(object):
 
         try:
             tree = ET.fromstring(response.text)
-            self.fetch_namespace(tree, CONTEXT_MOTION)
-            enabled = tree.find(self.element_query('enabled', CONTEXT_MOTION))
-
-            if enabled is not None:
-                self._motion_detection_xml = tree
-            self.motion_detection = {'true': True, 'false': False}[enabled.text]
-            return self.motion_detection
-
-        except AttributeError as err:
-            _LOGGING.error('Entire response: %s', response.text)
-            _LOGGING.error('There was a problem: %s', err)
+        except ET.ParseError as err:
+            _LOGGING.debug('Malformed motion detection response: %s', err)
             self.motion_detection = None
             return self.motion_detection
+
+        self.fetch_namespace(tree, CONTEXT_MOTION)
+        enabled = tree.find(self.element_query('enabled', CONTEXT_MOTION))
+
+        if enabled is None:
+            # NVRs and some cameras answer 200 with a different document.
+            # They don't support the endpoint; that isn't an error.
+            _LOGGING.debug('Device does not report motion detection state.')
+            self.motion_detection = None
+            return self.motion_detection
+
+        self._motion_detection_xml = tree
+        self.motion_detection = {'true': True, 'false': False}.get(enabled.text)
+        return self.motion_detection
 
     def enable_motion_detection(self):
         """Enable motion detection"""
@@ -1121,6 +1126,134 @@ class HikCamera(object):
             _LOGGING.warning('Failed to search recordings: %s', err)
 
         return recordings
+
+    def download_recording(self, playback_uri, output_stream=None,
+                           chunk_size=65536):
+        """Download a recording from the camera/NVR.
+
+        Args:
+            playback_uri: The playback URI from search_recordings() result.
+            output_stream: Optional file-like object to write to.
+                If None, returns an iterator yielding chunks of bytes.
+            chunk_size: Size of chunks to read (default 64KB).
+
+        Returns:
+            If output_stream provided: Total bytes written (int).
+            If output_stream is None: Iterator yielding chunks of bytes.
+
+        Raises:
+            requests.exceptions.HTTPError: If the server returns an error.
+
+        Example:
+            recordings = camera.search_recordings(track_id, start, end)
+            playback_uri = recordings[0].playback_uri
+
+            # Stream to file
+            with open('recording.mp4', 'wb') as f:
+                camera.download_recording(playback_uri, f)
+
+            # Or get iterator
+            for chunk in camera.download_recording(playback_uri):
+                process(chunk)
+        """
+        url = '%s/ISAPI/ContentMgmt/download' % self.root_url
+        xml_payload = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<downloadRequest>'
+            '<playbackURI>{playback_uri}</playbackURI>'
+            '</downloadRequest>'
+        ).format(playback_uri=playback_uri)
+
+        response = self.hik_request.post(
+            url,
+            data=xml_payload,
+            headers={'Content-Type': 'application/xml'},
+            stream=True,
+            timeout=(CONNECT_TIMEOUT, DOWNLOAD_TIMEOUT)
+        )
+        response.raise_for_status()
+
+        if output_stream is not None:
+            total = 0
+            for chunk in response.iter_content(chunk_size=chunk_size):
+                if chunk:
+                    output_stream.write(chunk)
+                    total += len(chunk)
+            return total
+
+        return response.iter_content(chunk_size=chunk_size)
+
+    async def async_download_recording(self, playback_uri,
+                                       output_stream=None,
+                                       chunk_size=65536):
+        """Download a recording asynchronously using aiohttp.
+
+        Requires the ``aiohttp`` package to be installed.
+
+        Args:
+            playback_uri: The playback URI from search_recordings() result.
+            output_stream: Optional async or sync file-like object to write to.
+                If None, returns the full content as bytes.
+            chunk_size: Size of chunks to read (default 64KB).
+
+        Returns:
+            If output_stream provided: Total bytes written (int).
+            If output_stream is None: The downloaded bytes.
+
+        Raises:
+            ImportError: If aiohttp is not installed.
+            aiohttp.ClientResponseError: If the server returns an error.
+        """
+        try:
+            import aiohttp
+        except ImportError:
+            raise ImportError(
+                "aiohttp is required for async downloads. "
+                "Install it with: pip install aiohttp"
+            )
+
+        url = '%s/ISAPI/ContentMgmt/download' % self.root_url
+        xml_payload = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<downloadRequest>'
+            '<playbackURI>{playback_uri}</playbackURI>'
+            '</downloadRequest>'
+        ).format(playback_uri=playback_uri)
+
+        auth = aiohttp.BasicAuth(self.usr, self.pwd)
+        timeout = aiohttp.ClientTimeout(
+            sock_connect=CONNECT_TIMEOUT,
+            sock_read=DOWNLOAD_TIMEOUT
+        )
+
+        async with aiohttp.ClientSession(
+            auth=auth, timeout=timeout
+        ) as session:
+            async with session.post(
+                url,
+                data=xml_payload,
+                headers={'Content-Type': 'application/xml'},
+                ssl=self.hik_request.verify if self.hik_request.verify else False
+            ) as response:
+                response.raise_for_status()
+
+                if output_stream is not None:
+                    total = 0
+                    async for chunk in response.content.iter_chunked(
+                        chunk_size
+                    ):
+                        if chunk:
+                            if hasattr(output_stream, 'write') and \
+                               callable(getattr(output_stream.write,
+                                                '__call__', None)):
+                                result = output_stream.write(chunk)
+                                # Support async write
+                                if hasattr(result, '__await__'):
+                                    await result
+                            total += len(chunk)
+                    return total
+
+                return await response.read()
 
     def _parse_recording_results(self, root):
         """Parse search results from XML response.
