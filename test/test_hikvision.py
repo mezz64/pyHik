@@ -706,6 +706,30 @@ class StreamReliabilityTestCase(unittest.TestCase):
         self.assertIn("timeout", alternate_call.kwargs)
 
 
+class StreamConnectedTestCase(unittest.TestCase):
+    def test_state_changes_notify_every_callback_once(self):
+        camera = make_camera({"VMD": [1], "tamperdetection": [1]})
+        motion_callback = MagicMock()
+        tamper_callback = MagicMock()
+        camera.add_update_callback(motion_callback, "id.Motion.1")
+        camera.add_update_callback(tamper_callback, "id.Tamper Detection.1")
+
+        self.assertFalse(camera.stream_connected)
+
+        camera._set_stream_connected(True)
+        self.assertTrue(camera.stream_connected)
+        motion_callback.assert_called_once_with("id.Motion.1")
+        tamper_callback.assert_called_once_with("id.Tamper Detection.1")
+
+        # Setting the same state again notifies nobody.
+        camera._set_stream_connected(True)
+        motion_callback.assert_called_once_with("id.Motion.1")
+
+        camera._set_stream_connected(False)
+        self.assertFalse(camera.stream_connected)
+        self.assertEqual(motion_callback.call_count, 2)
+        
+        
 class DetectionTargetTestCase(unittest.TestCase):
     def test_top_level_target_type(self):
         camera = make_camera()

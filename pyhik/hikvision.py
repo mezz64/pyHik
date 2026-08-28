@@ -161,6 +161,8 @@ class HikCamera(object):
         # Callbacks
         self._updateCallbacks = []
 
+        self._stream_connected = False
+
         self.initialize()
 
     @property
@@ -187,6 +189,23 @@ class HikCamera(object):
     def current_motion_detection_state(self):
         """Return current state of motion detection property"""
         return self.motion_detection
+
+    @property
+    def stream_connected(self):
+        """Return True if the event stream is currently connected."""
+        return self._stream_connected
+
+    def _set_stream_connected(self, connected):
+        """Update stream connection state and notify callbacks on changes."""
+        if self._stream_connected == connected:
+            return
+        self._stream_connected = connected
+        _LOGGING.info('%s event stream %s', self.name,
+                      'connected' if connected else 'disconnected')
+        # Notify every registered callback, so a consumer can mark all of its
+        # sensors unavailable while the device is unreachable.
+        for callback, sensor in self._updateCallbacks:
+            callback(sensor)
 
     def get_motion_detection(self):
         """Fetch current motion state from camera"""
@@ -740,6 +759,7 @@ class HikCamera(object):
                 else:
                     _LOGGING.debug('%s Connection Successful.', self.name)
                     fail_count = 0
+                    self._set_stream_connected(True)
                     self.watchdog.start()
 
                 for line in stream.iter_lines():
@@ -779,6 +799,7 @@ class HikCamera(object):
                     # We were asked to stop the thread so lets do so.
                     _LOGGING.debug('Stopping event stream thread for %s',
                                    self.name)
+                    self._set_stream_connected(False)
                     self.watchdog.stop()
                     self.hik_request_stream.close()
                     return
@@ -793,7 +814,13 @@ class HikCamera(object):
             except (ValueError,
                     requests.exceptions.RequestException) as err:
                 fail_count += 1
+                watchdog_reset = reset_event.is_set()
                 reset_event.clear()
+                # A watchdog reset is routine maintenance on a quiet stream,
+                # so only report the stream as down once the reconnect also
+                # fails, or when the failure came from the connection itself.
+                if not watchdog_reset or fail_count > 1:
+                    self._set_stream_connected(False)
                 _LOGGING.warning('%s Connection Failed (count=%d). Waiting %ss. Err: %s',
                                  self.name, fail_count, (fail_count * 5) + 5, err)
                 parse_string = ""
