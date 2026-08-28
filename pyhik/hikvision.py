@@ -507,7 +507,7 @@ class HikCamera(object):
                     entries = self.event_states.setdefault(etype, [])
                     if not any(entry[1] == channel for entry in entries):
                         entries.append(
-                            [False, channel, 0, datetime.datetime.now()])
+                            [False, channel, 0, datetime.datetime.now(), None])
 
             _LOGGING.debug('Initialized Dictionary: %s', self.event_states)
         else:
@@ -845,6 +845,15 @@ class HikCamera(object):
             _LOGGING.error('Problem finding attribute: %s', err)
             return
 
+        # Optional smart-event detection target (human, vehicle, ...). It can
+        # appear at the top level or nested in a detection region entry.
+        etarget = tree.find(
+            './/%s' % self.element_query('targetType', CONTEXT_ALERT))
+        if etarget is None:
+            etarget = tree.find(
+                './/%s' % self.element_query('detectionTarget', CONTEXT_ALERT))
+        target_type = etarget.text if etarget is not None else None
+
         # Take care of keep-alive
         if len(etype) > 0 and etype == 'Video Loss':
             self.watchdog.pet()
@@ -858,7 +867,7 @@ class HikCamera(object):
                 estate = (estate == 'active')
                 old_state = state[0]
                 attr = [estate, echid, int(ecount),
-                        datetime.datetime.now()]
+                        datetime.datetime.now(), target_type]
                 self.update_attributes(etype, echid, attr)
 
                 if estate != old_state:
@@ -879,8 +888,11 @@ class HikCamera(object):
                     if sec_elap > 5 and eprop[0] is True:
                         _LOGGING.debug('Updating stale event %s on CH(%s)',
                                        etype, eprop[1])
+                        # Keep the last detection target so consumers can pair
+                        # it with the last tripped time.
                         attr = [False, eprop[1], eprop[2],
-                                datetime.datetime.now()]
+                                datetime.datetime.now(),
+                                eprop[4] if len(eprop) > 4 else None]
                         self.update_attributes(etype, eprop[1], attr)
                         self.publish_changes(etype, eprop[1])
 
@@ -935,9 +947,10 @@ class HikCamera(object):
                     sensor[1] == channel for sensor in self.event_states[event_name]
                 )
                 if not channel_exists:
-                    # Add the event state: [is_active, channel, count, last_update_time]
+                    # Add the event state:
+                    # [is_active, channel, count, last_update_time, target_type]
                     self.event_states[event_name].append(
-                        [False, channel, 0, datetime.datetime.now()]
+                        [False, channel, 0, datetime.datetime.now(), None]
                     )
 
     def get_recording_days(self, track_id, start_date, end_date):

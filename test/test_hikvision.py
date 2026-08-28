@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import datetime
 import io
 import logging
 import requests
@@ -549,7 +550,13 @@ xmlns="http://www.hikvision.com/ver20/XMLSchema" version="2.0">
 <eventType>{etype}</eventType>
 <eventState>active</eventState>
 <eventDescription>Motion alarm</eventDescription>
+{extra}
 </EventNotificationAlert>"""
+
+
+def alert(etype="VMD", extra=""):
+    """One alert packet. extra goes inside it, for the target elements."""
+    return ET.fromstring(ALERT_XML.format(etype=etype, extra=extra))
 
 
 def make_camera(triggers=None):
@@ -577,7 +584,7 @@ class UnsupportedSensorTypeTestCase(unittest.TestCase):
 
     def test_process_stream_ignores_unsupported_event_type(self):
         camera = make_camera()
-        tree = ET.fromstring(ALERT_XML.format(etype="storageDetection"))
+        tree = alert("storageDetection")
 
         with self.assertNoLogs("pyhik.hikvision", level=logging.ERROR):
             camera.process_stream(tree)
@@ -586,7 +593,7 @@ class UnsupportedSensorTypeTestCase(unittest.TestCase):
 
     def test_process_stream_still_handles_known_event_type(self):
         camera = make_camera()
-        camera.process_stream(ET.fromstring(ALERT_XML.format(etype="VMD")))
+        camera.process_stream(alert())
 
         self.assertTrue(camera.fetch_attributes("Motion", 1)[0])
 
@@ -699,6 +706,44 @@ class StreamReliabilityTestCase(unittest.TestCase):
         self.assertIn("timeout", alternate_call.kwargs)
 
 
+class DetectionTargetTestCase(unittest.TestCase):
+    def test_top_level_target_type(self):
+        camera = make_camera()
+        camera.process_stream(
+            alert(extra="<targetType>human</targetType>"))
+
+        attributes = camera.fetch_attributes("Motion", 1)
+        self.assertTrue(attributes[0])
+        self.assertEqual(attributes[4], "human")
+
+    def test_nested_detection_target(self):
+        camera = make_camera()
+        camera.process_stream(alert(
+            extra="<DetectionRegionList><DetectionRegionEntry>"
+                  "<detectionTarget>vehicle</detectionTarget>"
+                  "</DetectionRegionEntry></DetectionRegionList>"))
+
+        self.assertEqual(camera.fetch_attributes("Motion", 1)[4], "vehicle")
+
+    def test_alert_without_a_target(self):
+        camera = make_camera()
+        camera.process_stream(alert())
+
+        self.assertIsNone(camera.fetch_attributes("Motion", 1)[4])
+
+    def test_stale_update_keeps_the_last_target(self):
+        camera = make_camera()
+        camera.process_stream(
+            alert(extra="<targetType>human</targetType>"))
+        # Pretend the last update was long enough ago to go stale.
+        camera.event_states["Motion"][0][3] -= datetime.timedelta(seconds=30)
+        camera.update_stale()
+
+        attributes = camera.fetch_attributes("Motion", 1)
+        self.assertFalse(attributes[0])
+        self.assertEqual(attributes[4], "human")
+        
+        
 class DownloadRecordingTestCase(unittest.TestCase):
     """Tests for the download_recording method."""
 
