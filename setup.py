@@ -7,9 +7,6 @@
 # git tag 0.1 -m "0.1 release"
 # git push --tags origin master
 #
-# Upload to PyPI Live
-# python setup.py register -r pypi
-# python setup.py sdist upload -r pypi
 
 
 from setuptools import setup
@@ -17,13 +14,13 @@ from setuptools import setup
 setup(
     name='pyHik',
     packages=['pyhik'],
-    version='0.4.3',
+    version='0.4.4',
     description='Python API for Hikvision cameras and NVRs - event streaming, ISAPI access, and device control.',
     author='John Mihalic',
     author_email='mezz64@users.noreply.github.com',
     license='MIT',
     url='https://github.com/mezz64/pyhik',
-    download_url='https://github.com/mezz64/pyhik/tarball/0.4.3',
+    download_url='https://github.com/mezz64/pyhik/tarball/0.4.4',
     keywords=['hik', 'hikvision', 'event stream', 'events', 'api wrapper', 'homeassistant', 'isapi', 'nvr', 'camera'],
     classifiers=[
         'Development Status :: 4 - Beta',
