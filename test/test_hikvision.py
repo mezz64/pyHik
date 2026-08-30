@@ -5,6 +5,7 @@ import io
 import logging
 import requests
 import threading
+import time
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -670,40 +671,75 @@ class DuplicateChannelsTestCase(unittest.TestCase):
         self.assertEqual(len(camera.event_states["Motion"]), 1)
 
 
-class StopLoop(Exception):
-    """Raised from a patched sleep to leave alert_stream's endless loop."""
+def killed_after(retries):
+    """A kill event that answers 'not yet' to the backoff waits of the first
+    `retries` attempts and stops the loop on the next one, so a test can run a
+    fixed number of reconnects without waiting out the real backoff."""
+    kill_event = MagicMock()
+    kill_event.is_set.return_value = False
+    kill_event.wait.side_effect = [False] * (2 * retries) + [True]
+    return kill_event
 
 
 class StreamReliabilityTestCase(unittest.TestCase):
-    @patch("pyhik.hikvision.time.sleep")
-    def test_read_timeout_does_not_kill_the_thread(self, mock_sleep):
+    def test_read_timeout_does_not_kill_the_thread(self):
         """A read timeout is how a silently dropped connection surfaces. If it
         escapes the loop the thread dies and events stop for good."""
         camera = make_camera()
         camera.hik_request_stream = MagicMock()
         camera.hik_request_stream.get.side_effect = \
             requests.exceptions.ReadTimeout("read timed out")
-        # Leave the retry loop rather than sleeping through the backoff.
-        mock_sleep.side_effect = [None, StopLoop]
 
-        with self.assertRaises(StopLoop):
-            camera.alert_stream(threading.Event(), threading.Event())
+        camera.alert_stream(threading.Event(), killed_after(1))
 
-    @patch("pyhik.hikvision.time.sleep")
-    def test_alternate_stream_url_has_a_timeout(self, mock_sleep):
+        self.assertEqual(camera.hik_request_stream.get.call_count, 2)
+
+    def test_alternate_stream_url_has_a_timeout(self):
         """Without a timeout the fallback request can block the thread
         forever on a device that accepts the connection and never answers."""
         camera = make_camera()
         camera.hik_request_stream = MagicMock()
         camera.hik_request_stream.get.return_value = MagicMock(
             status_code=requests.codes.not_found)
-        mock_sleep.side_effect = [None, StopLoop]
 
-        with self.assertRaises(StopLoop):
-            camera.alert_stream(threading.Event(), threading.Event())
+        camera.alert_stream(threading.Event(), killed_after(0))
 
         alternate_call = camera.hik_request_stream.get.call_args_list[1]
         self.assertIn("timeout", alternate_call.kwargs)
+
+    def test_disconnect_does_not_wait_out_the_backoff(self):
+        """disconnect() joins this thread with no timeout, so a backoff that
+        ignores the kill event is a wait its caller cannot escape. A host
+        shutting down while the camera is unreachable would block on it."""
+        camera = make_camera()
+        camera.hik_request_stream = MagicMock()
+        failing = threading.Event()
+
+        def unreachable(*args, **kwargs):
+            failing.set()
+            raise requests.exceptions.ConnectionError("no route to host")
+
+        camera.hik_request_stream.get.side_effect = unreachable
+
+        camera.start_stream()
+        self.assertTrue(failing.wait(5))
+        started = time.monotonic()
+        camera.disconnect()
+
+        # The backoff it was sitting in is 5s, and grows with every failure.
+        self.assertLess(time.monotonic() - started, 4)
+
+    def test_a_killed_stream_does_not_reconnect(self):
+        """The kill event can arrive while the thread is between attempts.
+        Reconnecting then leaves a thread nobody is going to join again."""
+        camera = make_camera()
+        camera.hik_request_stream = MagicMock()
+        kill_event = threading.Event()
+        kill_event.set()
+
+        camera.alert_stream(threading.Event(), kill_event)
+
+        camera.hik_request_stream.get.assert_not_called()
 
 
 class StreamConnectedTestCase(unittest.TestCase):
