@@ -9,13 +9,19 @@
 #
 
 
+from pathlib import Path
+
 from setuptools import setup
+
+long_description = (Path(__file__).parent / 'README.md').read_text(encoding='utf-8')
 
 setup(
     name='pyHik',
     packages=['pyhik'],
     version='0.4.5',
     description='Python API for Hikvision cameras and NVRs - event streaming, ISAPI access, and device control.',
+    long_description=long_description,
+    long_description_content_type='text/markdown',
     author='John Mihalic',
     author_email='mezz64@users.noreply.github.com',
     license='MIT',
