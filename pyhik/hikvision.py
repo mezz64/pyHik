@@ -11,7 +11,6 @@ http://oversea-download.hikvision.com/uploadfile/Leaflet/ISAPI/HIKVISION%20ISAPI
 Imaging:
 http://oversea-download.hikvision.com/uploadfile/Leaflet/ISAPI/HIKVISION%20ISAPI_2.0-Image%20Service.pdf
 """
-import time
 import datetime
 from dataclasses import dataclass
 import logging
@@ -741,7 +740,7 @@ class HikCamera(object):
         url = '%s/ISAPI/Event/notification/alertStream' % self.root_url
 
         # pylint: disable=too-many-nested-blocks
-        while True:
+        while not kill_event.is_set():
 
             try:
                 stream = self.hik_request_stream.get(url, stream=True,
@@ -797,12 +796,7 @@ class HikCamera(object):
 
                 if kill_event.is_set():
                     # We were asked to stop the thread so lets do so.
-                    _LOGGING.debug('Stopping event stream thread for %s',
-                                   self.name)
-                    self._set_stream_connected(False)
-                    self.watchdog.stop()
-                    self.hik_request_stream.close()
-                    return
+                    break
                 elif reset_event.is_set():
                     # We need to reset the connection.
                     raise ValueError('Watchdog failed.')
@@ -826,10 +820,21 @@ class HikCamera(object):
                 parse_string = ""
                 self.watchdog.stop()
                 self.hik_request_stream.close()
-                time.sleep(5)
+                # disconnect() sets the kill event and then joins this thread
+                # with no timeout, so every wait in here is a wait its caller
+                # cannot escape. Sleeping the backoff out would hold up a host
+                # shutdown for as long as the backoff lasts, and the backoff
+                # grows with every failure.
+                if kill_event.wait(5):
+                    break
                 self.update_stale()
-                time.sleep(fail_count * 5)
-                continue
+                if kill_event.wait(fail_count * 5):
+                    break
+
+        _LOGGING.debug('Stopping event stream thread for %s', self.name)
+        self._set_stream_connected(False)
+        self.watchdog.stop()
+        self.hik_request_stream.close()
 
     def process_stream(self, tree):
         """Process incoming event stream packets."""
