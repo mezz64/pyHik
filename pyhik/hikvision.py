@@ -458,6 +458,13 @@ class HikCamera(object):
         else:
             return '{%s}%s' % (XML_NAMESPACE, element)
 
+    def element_text(self, tree, element, context=CONTEXT_ALERT):
+        """Text of an element, or None when the device left it out."""
+        node = tree.find(self.element_query(element, context))
+        if node is None or node.text is None:
+            return None
+        return node.text.strip() or None
+
     def fetch_namespace(self, tree, context):
         """Determine proper namespace to find given element."""
         if context == CONTEXT_INFO:
@@ -841,41 +848,47 @@ class HikCamera(object):
         if not self.namespace[CONTEXT_ALERT]:
             self.fetch_namespace(tree, CONTEXT_ALERT)
 
-        try:
-            raw_etype = tree.find(
-                self.element_query('eventType', CONTEXT_ALERT)).text
-            try:
-                etype = SENSOR_MAP[raw_etype.lower()]
-            except KeyError:
-                # Event type we don't model (e.g. storageDetection); skip
-                # quietly rather than logging an error for every packet.
-                _LOGGING.debug('Unsupported event type "%s", ignoring.',
-                               raw_etype)
-                return
-
-            # Since this pasing is different and not really usefull for now, just return without error.
-            if len(etype) > 0 and etype == 'Ongoing Events':
-                return
-            
-            estate = tree.find(
-                self.element_query('eventState', CONTEXT_ALERT)).text
-
-            for idtype in ID_TYPES:
-                echid = tree.find(self.element_query(idtype, CONTEXT_ALERT))
-                if echid is not None:
-                    try:
-                        # Need to make sure this is actually a number
-                        echid = int(echid.text)
-                        break
-                    except (ValueError, TypeError) as err:
-                        # Field must not be an integer or is blank
-                        pass
-
-            ecount = tree.find(
-                self.element_query('activePostCount', CONTEXT_ALERT)).text
-        except (AttributeError, KeyError, IndexError) as err:
-            _LOGGING.error('Problem finding attribute: %s', err)
+        raw_etype = self.element_text(tree, 'eventType')
+        if raw_etype is None:
+            # Nothing identifies the event, so there is nothing to report.
+            _LOGGING.debug('Alert packet carries no event type, ignoring.')
             return
+
+        try:
+            etype = SENSOR_MAP[raw_etype.lower()]
+        except KeyError:
+            # Event type we don't model (e.g. storageDetection); skip
+            # quietly rather than logging an error for every packet.
+            _LOGGING.debug('Unsupported event type "%s", ignoring.',
+                           raw_etype)
+            return
+
+        # Since this pasing is different and not really usefull for now, just return without error.
+        if len(etype) > 0 and etype == 'Ongoing Events':
+            return
+
+        # Every remaining field is optional in practice: devices leave any of
+        # them out of a packet. None of them identify the event, so a missing
+        # one must not cost us the alert itself.
+        estate = self.element_text(tree, 'eventState')
+
+        echid = None
+        for idtype in ID_TYPES:
+            raw_echid = self.element_text(tree, idtype)
+            if raw_echid is None:
+                continue
+            try:
+                # Need to make sure this is actually a number
+                echid = int(raw_echid)
+                break
+            except ValueError:
+                # Field must not be an integer
+                continue
+
+        try:
+            ecount = int(self.element_text(tree, 'activePostCount'))
+        except (TypeError, ValueError):
+            ecount = 0
 
         # Optional smart-event detection target (human, vehicle, ...). It can
         # appear at the top level or nested in a detection region entry.
@@ -895,10 +908,13 @@ class HikCamera(object):
             state = self.fetch_attributes(etype, echid)
             if state:
                 # Determine if state has changed
-                # If so, publish, otherwise do nothing
-                estate = (estate == 'active')
+                # If so, publish, otherwise do nothing.
+                # A device that reports no state only posts while the event
+                # is happening, so the packet itself is the active signal;
+                # update_stale() clears it once the posts stop.
+                estate = estate is None or estate == 'active'
                 old_state = state[0]
-                attr = [estate, echid, int(ecount),
+                attr = [estate, echid, ecount,
                         datetime.datetime.now(), target_type]
                 self.update_attributes(etype, echid, attr)
 
