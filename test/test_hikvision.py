@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import contextlib
 import datetime
 import io
 import logging
@@ -15,6 +16,29 @@ from pyhik.hikvision import HikCamera, inject_events_into_camera
 from pyhik.constants import (
     CONNECT_TIMEOUT, DOWNLOAD_TIMEOUT, NVR_DEVICE, VALID_NOTIFICATION_METHODS
 )
+
+if not hasattr(unittest.TestCase, "assertNoLogs"):
+    # unittest grew assertNoLogs in 3.10; the library still supports 3.9.
+    @contextlib.contextmanager
+    def _assert_no_logs(self, logger, level):
+        log = logging.getLogger(logger)
+        captured = []
+        handler = logging.Handler()
+        handler.emit = captured.append
+        original_level = log.level
+        log.addHandler(handler)
+        log.setLevel(level)
+        try:
+            yield
+        finally:
+            log.removeHandler(handler)
+            log.setLevel(original_level)
+
+        unexpected = [r.getMessage() for r in captured if r.levelno >= level]
+        if unexpected:
+            self.fail("unexpected logs on %s: %s" % (logger, unexpected))
+
+    unittest.TestCase.assertNoLogs = _assert_no_logs
 
 XML = """<MotionDetection xmlns="http://www.hikvision.com/ver20/XMLSchema" version="2.0">
     <enabled>{}</enabled>
