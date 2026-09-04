@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import contextlib
 import datetime
 import io
 import logging
@@ -15,6 +16,29 @@ from pyhik.hikvision import HikCamera, inject_events_into_camera
 from pyhik.constants import (
     CONNECT_TIMEOUT, DOWNLOAD_TIMEOUT, NVR_DEVICE, VALID_NOTIFICATION_METHODS
 )
+
+if not hasattr(unittest.TestCase, "assertNoLogs"):
+    # unittest grew assertNoLogs in 3.10; the library still supports 3.9.
+    @contextlib.contextmanager
+    def _assert_no_logs(self, logger, level):
+        log = logging.getLogger(logger)
+        captured = []
+        handler = logging.Handler()
+        handler.emit = captured.append
+        original_level = log.level
+        log.addHandler(handler)
+        log.setLevel(level)
+        try:
+            yield
+        finally:
+            log.removeHandler(handler)
+            log.setLevel(original_level)
+
+        unexpected = [r.getMessage() for r in captured if r.levelno >= level]
+        if unexpected:
+            self.fail("unexpected logs on %s: %s" % (logger, unexpected))
+
+    unittest.TestCase.assertNoLogs = _assert_no_logs
 
 XML = """<MotionDetection xmlns="http://www.hikvision.com/ver20/XMLSchema" version="2.0">
     <enabled>{}</enabled>
@@ -976,6 +1000,71 @@ class MotionDetectionUnsupportedTestCase(unittest.TestCase):
             camera = self._camera_answering("not xml at all")
 
         self.assertIsNone(camera.current_motion_detection_state)
+
+
+class PartialAlertPacketTestCase(unittest.TestCase):
+    """Devices leave optional fields out of alert packets. The event they do
+    describe still has to reach the consumer."""
+
+    NS = "{http://www.hikvision.com/ver20/XMLSchema}"
+
+    def _packet(self, drop=(), blank=()):
+        tree = alert()
+        for name in drop:
+            tree.remove(tree.find(self.NS + name))
+        for name in blank:
+            tree.find(self.NS + name).text = ""
+        return tree
+
+    def _process(self, tree):
+        camera = make_camera()
+        published = []
+        camera.add_update_callback(published.append,
+                                   "%s.Motion.1" % camera.cam_id)
+        with self.assertNoLogs("pyhik.hikvision", level=logging.ERROR):
+            camera.process_stream(tree)
+        return camera, published
+
+    def test_missing_event_state_reports_the_event_as_active(self):
+        # Only 'active' packets are posted by devices that omit the state;
+        # update_stale() is what clears them.
+        camera, published = self._process(self._packet(drop=["eventState"]))
+
+        self.assertTrue(camera.fetch_attributes("Motion", 1)[0])
+        self.assertEqual(len(published), 1)
+
+    def test_missing_post_count_still_publishes_the_event(self):
+        camera, published = self._process(
+            self._packet(drop=["activePostCount"]))
+
+        self.assertTrue(camera.fetch_attributes("Motion", 1)[0])
+        self.assertEqual(camera.fetch_attributes("Motion", 1)[2], 0)
+        self.assertEqual(len(published), 1)
+
+    def test_unparseable_post_count_does_not_escape(self):
+        # process_stream() runs inside alert_stream()'s except ValueError,
+        # so an exception here is read as a dropped connection and costs the
+        # whole stream a reconnect.
+        camera, published = self._process(
+            self._packet(blank=["activePostCount"]))
+
+        self.assertTrue(camera.fetch_attributes("Motion", 1)[0])
+        self.assertEqual(len(published), 1)
+
+    def test_missing_event_type_is_ignored_quietly(self):
+        camera, published = self._process(self._packet(drop=["eventType"]))
+
+        self.assertFalse(camera.fetch_attributes("Motion", 1)[0])
+        self.assertEqual(published, [])
+
+    def test_non_numeric_channel_id_falls_through_to_the_next_id_type(self):
+        tree = self._packet(blank=["channelID"])
+        ET.SubElement(tree, self.NS + "dynChannelID").text = "1"
+
+        camera, published = self._process(tree)
+
+        self.assertTrue(camera.fetch_attributes("Motion", 1)[0])
+        self.assertEqual(len(published), 1)
 
 
 if __name__ == "__main__":
