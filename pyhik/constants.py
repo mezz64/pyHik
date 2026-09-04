@@ -2,13 +2,13 @@
 pyhik.constants
 ~~~~~~~~~~~~~~~~~~~~
 Constants list
-Copyright (c) 2016-2021 John Mihalic <https://github.com/mezz64>
+Copyright (c) 2016-2026 John Mihalic <https://github.com/mezz64>
 Licensed under the MIT license.
 """
 
 MAJOR_VERSION = 0
 MINOR_VERSION = 4
-SUB_MINOR_VERSION = 3
+SUB_MINOR_VERSION = 6
 __version__ = '{}.{}.{}'.format(
     MAJOR_VERSION, MINOR_VERSION, SUB_MINOR_VERSION)
 

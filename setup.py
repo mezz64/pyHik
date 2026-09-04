@@ -18,7 +18,7 @@ long_description = (Path(__file__).parent / 'README.md').read_text(encoding='utf
 setup(
     name='pyHik',
     packages=['pyhik'],
-    version='0.4.5',
+    version='0.4.6',
     description='Python API for Hikvision cameras and NVRs - event streaming, ISAPI access, and device control.',
     long_description=long_description,
     long_description_content_type='text/markdown',
@@ -26,7 +26,7 @@ setup(
     author_email='mezz64@users.noreply.github.com',
     license='MIT',
     url='https://github.com/mezz64/pyhik',
-    download_url='https://github.com/mezz64/pyhik/tarball/0.4.5',
+    download_url='https://github.com/mezz64/pyhik/tarball/0.4.6',
     keywords=['hik', 'hikvision', 'event stream', 'events', 'api wrapper', 'homeassistant', 'isapi', 'nvr', 'camera'],
     classifiers=[
         'Development Status :: 4 - Beta',
