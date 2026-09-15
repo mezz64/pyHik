@@ -203,7 +203,7 @@ class HikCamera(object):
                       'connected' if connected else 'disconnected')
         # Notify every registered callback, so a consumer can mark all of its
         # sensors unavailable while the device is unreachable.
-        for callback, sensor in self._updateCallbacks:
+        for callback, sensor in list(self._updateCallbacks):
             callback(sensor)
 
     def get_motion_detection(self):
@@ -437,9 +437,23 @@ class HikCamera(object):
         self._updateCallbacks.append([callback, sensor])
         _LOGGING.debug('Added update callback to %s on %s', callback, sensor)
 
+    def remove_update_callback(self, callback, sensor):
+        """Unregister a callback added by add_update_callback().
+
+        A consumer whose objects come and go while the camera lives on --
+        Home Assistant keeps one HikCamera per device and adds and removes
+        entities against it -- has no other way to drop one, and a retained
+        callback is both a leak and a call into a dead object on the next
+        event. Removing one that was never added is not an error.
+        """
+        entry = [callback, sensor]
+        if entry in self._updateCallbacks:
+            self._updateCallbacks.remove(entry)
+            _LOGGING.debug('Removed update callback %s on %s', callback, sensor)
+
     def _do_update_callback(self, msg):
         """Call registered callback functions."""
-        for callback, sensor in self._updateCallbacks:
+        for callback, sensor in list(self._updateCallbacks):
             if sensor == msg:
                 _LOGGING.debug('Update callback %s for sensor %s',
                                callback, sensor)
