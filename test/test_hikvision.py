@@ -705,6 +705,53 @@ def killed_after(retries):
     return kill_event
 
 
+
+class UpdateCallbackTestCase(unittest.TestCase):
+    def test_removed_callback_stops_receiving_events(self):
+        """A consumer that drops an object has to be able to drop its
+        callback with it, or the next event calls into the dead one."""
+        camera = make_camera()
+        seen = []
+        camera.add_update_callback(seen.append, 'sensor')
+
+        camera.remove_update_callback(seen.append, 'sensor')
+        camera._do_update_callback('sensor')
+
+        self.assertEqual(seen, [])
+
+    def test_removing_leaves_the_other_callbacks_alone(self):
+        camera = make_camera()
+        kept = []
+        dropped = []
+        camera.add_update_callback(kept.append, 'sensor')
+        camera.add_update_callback(dropped.append, 'sensor')
+
+        camera.remove_update_callback(dropped.append, 'sensor')
+        camera._do_update_callback('sensor')
+
+        self.assertEqual(kept, ['sensor'])
+        self.assertEqual(dropped, [])
+
+    def test_removing_one_that_was_never_added_is_quiet(self):
+        camera = make_camera()
+        camera.remove_update_callback(print, 'sensor')
+
+    def test_removing_during_a_broadcast_does_not_skip_a_callback(self):
+        """The broadcast runs on the stream thread. If a callback removes
+        itself, iterating the live list walks past its neighbour."""
+        camera = make_camera()
+        seen = []
+
+        def unsubscribe(msg):
+            camera.remove_update_callback(unsubscribe, 'sensor')
+
+        camera.add_update_callback(unsubscribe, 'sensor')
+        camera.add_update_callback(seen.append, 'sensor')
+
+        camera._do_update_callback('sensor')
+
+        self.assertEqual(seen, ['sensor'])
+
 class StreamReliabilityTestCase(unittest.TestCase):
     def test_read_timeout_does_not_kill_the_thread(self):
         """A read timeout is how a silently dropped connection surfaces. If it
