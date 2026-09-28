@@ -621,8 +621,36 @@ class UnsupportedSensorTypeTestCase(unittest.TestCase):
         camera.process_stream(alert())
 
         self.assertTrue(camera.fetch_attributes("Motion", 1)[0])
-
-
+    
+    def test_process_stream_handles_namespace_change(self):
+        camera = make_camera()
+    
+        # First alert establishes the Hikvision namespace.
+        camera.process_stream(alert())
+    
+        # Reset the event state so the second alert must be processed
+        # successfully for the assertion below to pass.
+        camera.process_stream(
+            ET.fromstring(
+                ALERT_XML.replace(
+                    "<eventState>active</eventState>",
+                    "<eventState>inactive</eventState>",
+                ).format(etype="VMD", extra="")
+            )
+        )
+        self.assertFalse(camera.fetch_attributes("Motion", 1)[0])
+    
+        # Newer cameras may switch namespace within the same alert stream.
+        tree = ET.fromstring(
+            ALERT_XML.replace(
+                "http://www.hikvision.com/ver20/XMLSchema",
+                "http://www.isapi.org/ver20/XMLSchema",
+            ).format(etype="VMD", extra="")
+        )
+        camera.process_stream(tree)
+    
+        self.assertTrue(camera.fetch_attributes("Motion", 1)[0])
+    
 # One trigger carrying several accepted notification methods, and a second
 # trigger repeating the same event type and channel.
 DUPLICATE_TRIGGERS_XML = """<?xml version="1.0" encoding="UTF-8"?>
