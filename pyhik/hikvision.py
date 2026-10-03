@@ -638,12 +638,14 @@ class HikCamera(object):
             '%s/Event/triggers',          # Old devices?
         )
         response = {}
+        statuses = []
 
         for url in urls:
             try:
                 response = self.hik_request.get(url % self.root_url, timeout=CONNECT_TIMEOUT)
                 if response.status_code != requests.codes.ok:
                     # Try next alternate URL for triggers
+                    statuses.append('%s -> %s' % (url % '', response.status_code))
                     _LOGGING.debug('Trying alternate triggers URL.')
                     continue
 
@@ -653,8 +655,10 @@ class HikCamera(object):
                 return None
             break
         else:
-            _LOGGING.error('Unable to fetch events. '
-                           'Device firmware may be old/bad.')
+            # 401/403 means the account may not read the event config,
+            # not that the firmware is too old to have it.
+            _LOGGING.error('Unable to fetch event triggers from %s: %s',
+                           self.root_url, ', '.join(statuses))
             return None
 
         # pylint: disable=too-many-nested-blocks
