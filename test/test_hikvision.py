@@ -274,6 +274,23 @@ class GetEventTriggersTestCase(unittest.TestCase):
         self.assertEqual(sorted(events["VMD"]), [1, 4, 5])
 
 
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    def test_failed_fetch_logs_status_codes(self, mock_info, mock_session):
+        """Test that a failed triggers fetch logs each URL's HTTP status."""
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        session = mock_session.return_value
+        camera = HikCamera(host="localhost")
+        session.get.side_effect = [
+            MagicMock(status_code=401),
+            MagicMock(status_code=404),
+        ]
+        with self.assertLogs("pyhik.hikvision", level="ERROR") as logs:
+            self.assertIsNone(camera.get_event_triggers())
+
+        self.assertIn("/ISAPI/Event/triggers -> 401", logs.output[0])
+        self.assertIn("/Event/triggers -> 404", logs.output[0])
+
 class URLParsingTestCase(unittest.TestCase):
     """Test that URL parsing handles various host formats correctly."""
 
