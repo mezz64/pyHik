@@ -859,8 +859,7 @@ class HikCamera(object):
 
     def process_stream(self, tree):
         """Process incoming event stream packets."""
-        if not self.namespace[CONTEXT_ALERT]:
-            self.fetch_namespace(tree, CONTEXT_ALERT)
+        self.fetch_namespace(tree, CONTEXT_ALERT)
 
         raw_etype = self.element_text(tree, 'eventType')
         if raw_etype is None:
