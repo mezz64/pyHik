@@ -18,6 +18,11 @@ SNAPSHOT_TIMEOUT = 10
 RECORDING_SEARCH_TIMEOUT = 30
 DOWNLOAD_TIMEOUT = 300
 
+# Each alert in the event stream sits between these tags.
+ALERT_START = b'<EventNotificationAlert'
+ALERT_END = b'</EventNotificationAlert>'
+STREAM_READ_SIZE = 65536
+
 DEFAULT_PORT = 80
 DEFAULT_RTSP_PORT = 554
 XML_ENCODING = 'UTF-8'

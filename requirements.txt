@@ -1,0 +1,9 @@
+# Keep in step with install_requires in setup.py.
+requests>=2.20.0
+# HTTPResponse.read1(), used to read the event stream.
+urllib3>=2.2
+
+# Optional:
+# xmltodict>=0.13.0   ISAPI client (pip install pyHik[isapi])
+# aiohttp             async recording downloads
+# PyDispatcher        legacy dispatcher event signals

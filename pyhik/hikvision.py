@@ -41,18 +41,14 @@ from pyhik.constants import (
     CAM_DEVICE, NVR_DEVICE, CONNECT_TIMEOUT, READ_TIMEOUT, SNAPSHOT_TIMEOUT,
     RECORDING_SEARCH_TIMEOUT, DOWNLOAD_TIMEOUT, CONTEXT_INFO, CONTEXT_TRIG,
     CONTEXT_MOTION, CONTEXT_ALERT, CHANNEL_NAMES, ID_TYPES,
-    VALID_NOTIFICATION_METHODS, __version__)
+    VALID_NOTIFICATION_METHODS, ALERT_START, ALERT_END, STREAM_READ_SIZE,
+    __version__)
 
 # Register the default namespace to avoid ns0: prefixes in serialized XML
 ET.register_namespace('', XML_NAMESPACE)
 
 
 _LOGGING = logging.getLogger(__name__)
-
-# Each alert in the event stream sits between these tags.
-ALERT_START = b'<EventNotificationAlert'
-ALERT_END = b'</EventNotificationAlert>'
-STREAM_READ_SIZE = 65536
 
 
 @dataclass
