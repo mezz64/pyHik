@@ -1,4 +1,4 @@
-# Keep in step with install_requires in setup.py.
+# Read by setup.py as install_requires.
 requests>=2.20.0
 # HTTPResponse.read1(), used to read the event stream.
 urllib3>=2.2

@@ -13,7 +13,15 @@ from pathlib import Path
 
 from setuptools import setup
 
-long_description = (Path(__file__).parent / 'README.md').read_text(encoding='utf-8')
+here = Path(__file__).parent
+long_description = (here / 'README.md').read_text(encoding='utf-8')
+
+# Dependencies live in requirements.txt; skip its comments and blank lines.
+install_requires = [
+    line.split('#')[0].strip()
+    for line in (here / 'requirements.txt').read_text(encoding='utf-8').splitlines()
+    if line.split('#')[0].strip()
+]
 
 setup(
     name='pyHik',
@@ -39,11 +47,7 @@ setup(
         'Programming Language :: Python :: 3.12',
     ],
     python_requires='>=3.9',
-    install_requires=[
-        'requests>=2.20.0',
-        # HTTPResponse.read1(), used to read the event stream.
-        'urllib3>=2.2',
-    ],
+    install_requires=install_requires,
     extras_require={
         'isapi': ['xmltodict>=0.13.0'],
     },
