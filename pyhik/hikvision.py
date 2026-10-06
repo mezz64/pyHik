@@ -13,6 +13,7 @@ http://oversea-download.hikvision.com/uploadfile/Leaflet/ISAPI/HIKVISION%20ISAPI
 """
 import datetime
 from dataclasses import dataclass
+from functools import partial
 import logging
 import uuid
 from urllib.parse import quote, urlparse, urlunparse
@@ -25,6 +26,7 @@ except ImportError:
 import threading
 import requests
 from requests.auth import HTTPDigestAuth
+import urllib3
 
 # Make pydispatcher optional to support legacy implentations
 # New usage should implement the event_callback
@@ -46,6 +48,11 @@ ET.register_namespace('', XML_NAMESPACE)
 
 
 _LOGGING = logging.getLogger(__name__)
+
+# Each alert in the event stream sits between these tags.
+ALERT_START = b'<EventNotificationAlert'
+ALERT_END = b'</EventNotificationAlert>'
+STREAM_READ_SIZE = 65536
 
 
 @dataclass
@@ -758,8 +765,7 @@ class HikCamera(object):
     def alert_stream(self, reset_event, kill_event):
         """Open event stream."""
         _LOGGING.debug('Stream Thread Started: %s, %s', self.name, self.cam_id)
-        start_event = False
-        parse_string = ""
+        parse_buffer = b''
         fail_count = 0
 
         url = '%s/ISAPI/Event/notification/alertStream' % self.root_url
@@ -786,31 +792,47 @@ class HikCamera(object):
                     self._set_stream_connected(True)
                     self.watchdog.start()
 
-                for line in stream.iter_lines():
-                    # _LOGGING.debug('Processing line from %s', self.name)
-                    # filter out keep-alive new lines
-                    if line:
-                        str_line = line.decode("utf-8", "ignore")
-                        # New events start with --boundry
-                        if str_line.find('<EventNotificationAlert') != -1:
-                            # Start of event message
-                            start_event = True
-                            parse_string = str_line
-                        elif str_line.find('</EventNotificationAlert>') != -1:
-                            # Message end found found
-                            parse_string += str_line
-                            start_event = False
-                            if parse_string:
-                                try:
-                                    tree = ET.fromstring(parse_string)
-                                    self.process_stream(tree)
-                                    self.update_stale()
-                                except ET.ParseError as err:
-                                    _LOGGING.warning('XML parse error in stream.')
-                                parse_string = ""
+                # read1() returns whatever has arrived. iter_lines() waits to
+                # fill a 512 byte block, which on cameras that don't use
+                # chunked encoding holds an alert back until the next one.
+                read = partial(stream.raw.read1, STREAM_READ_SIZE,
+                               decode_content=True)
+                for data in iter(read, b''):
+                    parse_buffer += data
+                    while True:
+                        end = parse_buffer.find(ALERT_END)
+                        if end == -1:
+                            break
+                        end += len(ALERT_END)
+                        # A newer start tag supersedes an unfinished alert.
+                        start = parse_buffer.rfind(ALERT_START, 0, end)
+                        packet = parse_buffer[start:end] if start != -1 else b''
+                        parse_buffer = parse_buffer[end:]
+                        if not packet:
+                            # An end tag on its own can't parse, and always
+                            # got reported as a parse error.
+                            _LOGGING.warning('XML parse error in stream.')
                         else:
-                            if start_event:
-                                parse_string += str_line
+                            # Alerts used to be rebuilt from their lines with
+                            # the line breaks dropped. Keep parsing them that
+                            # way.
+                            parse_string = packet.decode("utf-8", "ignore")
+                            parse_string = parse_string.replace(
+                                '\r', '').replace('\n', '')
+                            try:
+                                tree = ET.fromstring(parse_string)
+                                self.process_stream(tree)
+                                self.update_stale()
+                            except ET.ParseError as err:
+                                _LOGGING.warning('XML parse error in stream.')
+
+                    # Hold on only to what still matters: the latest start
+                    # tag on, or a tail that may hold the start of a tag.
+                    start = parse_buffer.rfind(ALERT_START)
+                    if start != -1:
+                        parse_buffer = parse_buffer[start:]
+                    else:
+                        parse_buffer = parse_buffer[-(len(ALERT_END) - 1):]
 
                     if kill_event.is_set():
                         # We were asked to stop the thread so lets do so.
@@ -829,9 +851,11 @@ class HikCamera(object):
             # RequestException is the base class of every requests error and
             # covers read timeouts, which is how a silently dropped connection
             # surfaces. Anything not caught here kills the stream thread and
-            # events stop for good until the integration is reloaded.
+            # events stop for good until the integration is reloaded. Reading
+            # stream.raw raises urllib3's errors, not requests' wrappers.
             except (ValueError,
-                    requests.exceptions.RequestException) as err:
+                    requests.exceptions.RequestException,
+                    urllib3.exceptions.HTTPError) as err:
                 fail_count += 1
                 watchdog_reset = reset_event.is_set()
                 reset_event.clear()
@@ -842,7 +866,7 @@ class HikCamera(object):
                     self._set_stream_connected(False)
                 _LOGGING.warning('%s Connection Failed (count=%d). Waiting %ss. Err: %s',
                                  self.name, fail_count, (fail_count * 5) + 5, err)
-                parse_string = ""
+                parse_buffer = b''
                 self.watchdog.stop()
                 self.hik_request_stream.close()
                 # disconnect() sets the kill event and then joins this thread

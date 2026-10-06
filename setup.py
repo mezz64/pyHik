@@ -41,6 +41,8 @@ setup(
     python_requires='>=3.9',
     install_requires=[
         'requests>=2.20.0',
+        # HTTPResponse.read1(), used to read the event stream.
+        'urllib3>=2.2',
     ],
     extras_require={
         'isapi': ['xmltodict>=0.13.0'],

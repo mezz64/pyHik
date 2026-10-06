@@ -7,7 +7,9 @@ import logging
 import requests
 import threading
 import time
+import random
 import unittest
+import urllib3
 import xml.etree.ElementTree as ET
 
 from unittest.mock import call, MagicMock, patch, PropertyMock
@@ -856,6 +858,170 @@ class StreamReliabilityTestCase(unittest.TestCase):
         camera.alert_stream(threading.Event(), kill_event)
 
         camera.hik_request_stream.get.assert_not_called()
+
+
+def stream_part(xml):
+    """One alert as a camera frames it in the multipart event stream."""
+    body = xml.replace("\n", "\r\n").encode()
+    return (b'--boundary\r\nContent-Type: application/xml; charset="UTF-8"\r\n'
+            b'Content-Length: %d\r\n\r\n%s\r\n' % (len(body), body))
+
+
+def run_stream(camera, blocks):
+    """Hand alert_stream `blocks` as what each read returns, then stop."""
+    pending = list(reversed(blocks))
+    kill_event = threading.Event()
+
+    def read1(amt=None, decode_content=None):
+        if pending:
+            return pending.pop()
+        kill_event.set()
+        return b''
+
+    response = MagicMock(status_code=requests.codes.ok)
+    response.raw.read1.side_effect = read1
+    camera.hik_request_stream = MagicMock()
+    camera.hik_request_stream.get.return_value = response
+    camera.watchdog = MagicMock()
+    camera.alert_stream(threading.Event(), kill_event)
+    return response
+
+
+def line_parse_strings(stream):
+    """What alert_stream passed to ET.fromstring when it read the stream
+    with iter_lines(), before it moved to read1()."""
+    parsed, start_event, parse_string = [], False, ""
+    for line in stream.splitlines():
+        if line:
+            str_line = line.decode("utf-8", "ignore")
+            if str_line.find('<EventNotificationAlert') != -1:
+                start_event = True
+                parse_string = str_line
+            elif str_line.find('</EventNotificationAlert>') != -1:
+                parse_string += str_line
+                start_event = False
+                if parse_string:
+                    parsed.append(parse_string)
+                    parse_string = ""
+            else:
+                if start_event:
+                    parse_string += str_line
+    return parsed
+
+
+class StreamReadingTestCase(unittest.TestCase):
+    def test_alert_is_processed_without_waiting_for_more_data(self):
+        """iter_lines() held the end of an alert in a part filled block until
+        the next one arrived, delaying events on quiet cameras."""
+        camera = make_camera()
+        seen_at_next_read = []
+        part = stream_part(ALERT_XML.format(etype="VMD", extra=""))
+
+        def read1(amt=None, decode_content=None):
+            if not seen_at_next_read:
+                seen_at_next_read.append(None)
+                return part
+            seen_at_next_read.append(camera.fetch_attributes("Motion", 1)[0])
+            kill_event.set()
+            return b''
+
+        kill_event = threading.Event()
+        response = MagicMock(status_code=requests.codes.ok)
+        response.raw.read1.side_effect = read1
+        camera.hik_request_stream = MagicMock()
+        camera.hik_request_stream.get.return_value = response
+        camera.watchdog = MagicMock()
+        camera.alert_stream(threading.Event(), kill_event)
+
+        self.assertEqual(seen_at_next_read, [None, True])
+
+    def test_reads_decode_content(self):
+        """iter_lines() decoded a compressed body; reading raw must too."""
+        camera = make_camera()
+        camera.process_stream = MagicMock()
+
+        response = run_stream(camera, [b'x'])
+
+        response.raw.read1.assert_called_with(65536, decode_content=True)
+
+    def test_alerts_split_across_reads(self):
+        camera = make_camera()
+        camera.process_stream = MagicMock()
+        stream = stream_part(ALERT_XML.format(etype="VMD", extra="")) * 3
+
+        run_stream(camera, [stream[i:i + 1] for i in range(len(stream))])
+
+        self.assertEqual(camera.process_stream.call_count, 3)
+
+    def test_several_alerts_in_one_read(self):
+        camera = make_camera()
+        camera.process_stream = MagicMock()
+        stream = stream_part(ALERT_XML.format(etype="VMD", extra="")) * 3
+
+        run_stream(camera, [stream])
+
+        self.assertEqual(camera.process_stream.call_count, 3)
+
+    def test_parses_the_same_alerts_as_reading_lines(self):
+        """Whatever the stream holds and however it arrives, alerts reach
+        the parser exactly as they did when the stream was read by line."""
+        rng = random.Random(134)
+        alert = ALERT_XML.format(etype="VMD", extra="")
+        pieces = [
+            stream_part(alert),
+            stream_part(alert.replace("Motion alarm", "Bewegung äöü")),
+            stream_part(ALERT_XML.format(etype="videoloss", extra="")),
+            stream_part(alert).replace(b"Motion", b"Mo\xfftion"),
+            # Cut off by a newer alert before its end tag.
+            stream_part(alert).split(b"<eventState>")[0],
+            # End tag with no alert in front of it.
+            b"</EventNotificationAlert>\r\n",
+            stream_part("<EventNotificationAlert>\n<broken>\n</EventNotificationAlert>"),
+            b"\r\n", b"\r\n\r\n", b"--boundary\r\n", b"noise between parts\r\n",
+        ]
+        for _ in range(200):
+            stream = b"".join(rng.choice(pieces) for _ in range(rng.randint(1, 12)))
+            cuts = sorted(rng.sample(range(1, len(stream)),
+                                     rng.randint(0, min(40, len(stream) - 1))))
+            blocks = [stream[a:b] for a, b in zip([0] + cuts, cuts + [len(stream)])]
+
+            camera = make_camera()
+            outcomes = []
+            camera.process_stream = MagicMock(
+                side_effect=lambda tree: outcomes.append(ET.tostring(tree)))
+            handler = logging.Handler()
+            handler.emit = lambda record: outcomes.append(record.getMessage())
+            log = logging.getLogger("pyhik.hikvision")
+            log.addHandler(handler)
+            try:
+                run_stream(camera, blocks)
+            finally:
+                log.removeHandler(handler)
+
+            expected = []
+            for text in line_parse_strings(stream):
+                try:
+                    expected.append(ET.tostring(ET.fromstring(text)))
+                except ET.ParseError:
+                    expected.append('XML parse error in stream.')
+            self.assertEqual(
+                [o for o in outcomes if not isinstance(o, str) or 'XML' in o],
+                expected)
+
+    def test_read_timeout_from_the_raw_stream_reconnects(self):
+        """read1() raises urllib3's errors, which requests used to wrap. One
+        escaping the loop kills the thread and events stop for good."""
+        camera = make_camera()
+        response = MagicMock(status_code=requests.codes.ok)
+        response.raw.read1.side_effect = urllib3.exceptions.ReadTimeoutError(
+            None, None, "read timed out")
+        camera.hik_request_stream = MagicMock()
+        camera.hik_request_stream.get.return_value = response
+        camera.watchdog = MagicMock()
+
+        camera.alert_stream(threading.Event(), killed_after(1))
+
+        self.assertEqual(camera.hik_request_stream.get.call_count, 2)
 
 
 class StreamConnectedTestCase(unittest.TestCase):
