@@ -14,6 +14,7 @@ http://oversea-download.hikvision.com/uploadfile/Leaflet/ISAPI/HIKVISION%20ISAPI
 import datetime
 from dataclasses import dataclass
 import logging
+import time
 import uuid
 from urllib.parse import quote, urlparse, urlunparse
 
@@ -766,6 +767,8 @@ class HikCamera(object):
 
         # pylint: disable=too-many-nested-blocks
         while not kill_event.is_set():
+            stream = None
+            stream_started = None
 
             try:
                 stream = self.hik_request_stream.get(url, stream=True,
@@ -780,11 +783,14 @@ class HikCamera(object):
 
                 if stream.status_code != requests.codes.ok:
                     raise ValueError('Connection unsucessful.')
-                else:
-                    _LOGGING.debug('%s Connection Successful.', self.name)
-                    fail_count = 0
+
+                _LOGGING.debug('%s Connection Successful.', self.name)
+                stream_started = time.monotonic()
+                # A finite HTTP response does not establish a persistent
+                # event stream. Avoid brief availability transitions.
+                if 'Content-Length' not in stream.headers:
                     self._set_stream_connected(True)
-                    self.watchdog.start()
+                self.watchdog.start()
 
                 for line in stream.iter_lines():
                     # _LOGGING.debug('Processing line from %s', self.name)
@@ -826,12 +832,21 @@ class HikCamera(object):
                     # We need to reset the connection.
                     raise ValueError('Watchdog failed.')
 
+                # A persistent event stream should not terminate normally.
+                raise ValueError('Event stream ended unexpectedly.')
+
             # RequestException is the base class of every requests error and
             # covers read timeouts, which is how a silently dropped connection
             # surfaces. Anything not caught here kills the stream thread and
             # events stop for good until the integration is reloaded.
             except (ValueError,
                     requests.exceptions.RequestException) as err:
+                if stream is not None:
+                    stream.close()
+                # A short HTTP 200 response must not reset the backoff.
+                if (stream_started is not None and
+                        time.monotonic() - stream_started >= 30):
+                    fail_count = 0
                 fail_count += 1
                 watchdog_reset = reset_event.is_set()
                 reset_event.clear()
@@ -840,8 +855,9 @@ class HikCamera(object):
                 # fails, or when the failure came from the connection itself.
                 if not watchdog_reset or fail_count > 1:
                     self._set_stream_connected(False)
+                retry_delay = min((fail_count * 5) + 5, 300)
                 _LOGGING.warning('%s Connection Failed (count=%d). Waiting %ss. Err: %s',
-                                 self.name, fail_count, (fail_count * 5) + 5, err)
+                                 self.name, fail_count, retry_delay, err)
                 parse_string = ""
                 self.watchdog.stop()
                 self.hik_request_stream.close()
@@ -853,7 +869,7 @@ class HikCamera(object):
                 if kill_event.wait(5):
                     break
                 self.update_stale()
-                if kill_event.wait(fail_count * 5):
+                if kill_event.wait(retry_delay - 5):
                     break
 
         _LOGGING.debug('Stopping event stream thread for %s', self.name)
