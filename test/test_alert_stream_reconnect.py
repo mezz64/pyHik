@@ -103,24 +103,94 @@ class AlertStreamReconnectTests(unittest.TestCase):
                   for message in logs.output]
         self.assertEqual(counts, ['1', '2', '1', '2'])
 
-    def test_indefinite_stream_can_connect_before_first_event(self):
+    def test_indefinite_stream_can_connect_without_first_event(self):
         camera = camera_for_stream_test()
         kill = threading.Event()
         response = response_with_lines()
 
-        def lines():
-            self.assertTrue(camera.stream_connected)
-            yield b'--boundary'
-            kill.set()
+        with patch('pyhik.hikvision.threading.Timer') as timer:
+            def lines():
+                self.assertFalse(camera.stream_connected)
+                # Simulate the one-second confirmation of a quiet stream.
+                timer.call_args.args[1]()
+                self.assertTrue(camera.stream_connected)
+                kill.set()
+                yield b'--boundary'
 
-        response.iter_lines.side_effect = lines
-        camera.hik_request_stream.get.return_value = response
-        with patch.object(camera, '_set_stream_connected',
-                          wraps=camera._set_stream_connected) as connected:
-            camera.alert_stream(threading.Event(), kill)
+            response.iter_lines.side_effect = lines
+            camera.hik_request_stream.get.return_value = response
+            with patch.object(camera, '_set_stream_connected',
+                              wraps=camera._set_stream_connected) as connected:
+                camera.alert_stream(threading.Event(), kill)
+
         self.assertEqual(connected.call_args_list,
                          [call(True), call(False)])
+        timer.return_value.cancel.assert_called()
         camera.hik_request_stream.get.assert_called_once()
+
+    def test_empty_stream_without_content_length_never_becomes_available(self):
+        camera = camera_for_stream_test()
+        response = response_with_lines(headers={})
+        camera.hik_request_stream.get.return_value = response
+
+        with patch('pyhik.hikvision.threading.Timer') as timer:
+            with patch.object(camera, '_set_stream_connected',
+                              wraps=camera._set_stream_connected) as connected:
+                with self.assertLogs('pyhik.hikvision', level='WARNING'):
+                    camera.alert_stream(threading.Event(),
+                                        stop_after_retries(0))
+                # Even a callback already queued when the timer is canceled
+                # cannot publish a stale "connected" state after EOF.
+                timer.call_args.args[1]()
+
+        self.assertNotIn(call(True), connected.call_args_list)
+        timer.return_value.cancel.assert_called()
+
+    def test_content_length_stream_can_become_available_while_quiet(self):
+        camera = camera_for_stream_test()
+        kill = threading.Event()
+        response = response_with_lines({'Content-Length': '4096'})
+
+        with patch('pyhik.hikvision.threading.Timer') as timer:
+            def lines():
+                self.assertFalse(camera.stream_connected)
+                timer.call_args.args[1]()
+                self.assertTrue(camera.stream_connected)
+                kill.set()
+                yield b''
+
+            response.iter_lines.side_effect = lines
+            camera.hik_request_stream.get.return_value = response
+            camera.alert_stream(threading.Event(), kill)
+
+        timer.return_value.cancel.assert_called()
+        camera.hik_request_stream.get.assert_called_once()
+        self.assertFalse(camera.stream_connected)
+
+    def test_content_length_valid_alert_connects_immediately(self):
+        camera = camera_for_stream_test()
+        kill = threading.Event()
+        response = response_with_lines({'Content-Length': '4096'}, [
+            b'<EventNotificationAlert>',
+            b'<eventType>VMD</eventType>',
+            b'</EventNotificationAlert>',
+        ])
+        camera.hik_request_stream.get.return_value = response
+
+        def on_event(_):
+            self.assertTrue(camera.stream_connected)
+            kill.set()
+
+        camera.process_stream.side_effect = on_event
+        with patch('pyhik.hikvision.threading.Timer') as timer:
+            with patch.object(camera, '_set_stream_connected',
+                              wraps=camera._set_stream_connected) as connected:
+                camera.alert_stream(threading.Event(), kill)
+
+        camera.process_stream.assert_called_once()
+        self.assertEqual(connected.call_args_list,
+                         [call(True), call(False)])
+        timer.return_value.cancel.assert_called()
 
 
 if __name__ == '__main__':
