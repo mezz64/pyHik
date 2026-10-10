@@ -769,6 +769,23 @@ class HikCamera(object):
         while not kill_event.is_set():
             stream = None
             stream_started = None
+            confirmation_lock = threading.Lock()
+            confirmation_active = [False]
+            confirmation_timer = None
+
+            def confirm_connection(lock=confirmation_lock,
+                                   active=confirmation_active):
+                # Do not publish a connection after this attempt has ended.
+                with lock:
+                    if (active[0] and not kill_event.is_set()
+                            and not reset_event.is_set()):
+                        self._set_stream_connected(True)
+
+            def cancel_confirmation():
+                with confirmation_lock:
+                    confirmation_active[0] = False
+                if confirmation_timer is not None:
+                    confirmation_timer.cancel()
 
             try:
                 stream = self.hik_request_stream.get(url, stream=True,
@@ -786,10 +803,13 @@ class HikCamera(object):
 
                 _LOGGING.debug('%s Connection Successful.', self.name)
                 stream_started = time.monotonic()
-                # A finite HTTP response does not establish a persistent
-                # event stream. Avoid brief availability transitions.
-                if 'Content-Length' not in stream.headers:
-                    self._set_stream_connected(True)
+                # HTTP 200 alone does not prove a working event stream.
+                # Allow quiet streams to become available after one second,
+                # regardless of their Content-Length or transfer encoding.
+                confirmation_active[0] = True
+                confirmation_timer = threading.Timer(1.0, confirm_connection)
+                confirmation_timer.daemon = True
+                confirmation_timer.start()
                 self.watchdog.start()
 
                 for line in stream.iter_lines():
@@ -809,6 +829,9 @@ class HikCamera(object):
                             if parse_string:
                                 try:
                                     tree = ET.fromstring(parse_string)
+                                    # A valid alert confirms the stream even
+                                    # before the confirmation timer expires.
+                                    confirm_connection()
                                     self.process_stream(tree)
                                     self.update_stale()
                                 except ET.ParseError as err:
@@ -841,6 +864,7 @@ class HikCamera(object):
             # events stop for good until the integration is reloaded.
             except (ValueError,
                     requests.exceptions.RequestException) as err:
+                cancel_confirmation()
                 if stream is not None:
                     stream.close()
                 # A short HTTP 200 response must not reset the backoff.
@@ -871,6 +895,8 @@ class HikCamera(object):
                 self.update_stale()
                 if kill_event.wait(retry_delay - 5):
                     break
+            finally:
+                cancel_confirmation()
 
         _LOGGING.debug('Stopping event stream thread for %s', self.name)
         self._set_stream_connected(False)
