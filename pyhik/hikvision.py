@@ -778,6 +778,18 @@ class HikCamera(object):
                                                          timeout=(CONNECT_TIMEOUT,
                                                                   READ_TIMEOUT))
 
+                # Some devices reject a previously cached Digest nonce.
+                # Retry once with fresh authentication state.
+                if (stream.status_code == requests.codes.unauthorized
+                        and isinstance(self.hik_request_stream.auth,
+                                       HTTPDigestAuth)):
+                    stream.close()
+                    self.hik_request_stream.auth = HTTPDigestAuth(
+                        self.usr, self.pwd)
+                    stream = self.hik_request_stream.get(
+                        url, stream=True,
+                        timeout=(CONNECT_TIMEOUT, READ_TIMEOUT))
+
                 if stream.status_code != requests.codes.ok:
                     raise ValueError('Connection unsucessful.')
                 else:
