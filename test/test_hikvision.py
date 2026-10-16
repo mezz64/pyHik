@@ -763,6 +763,23 @@ class UnsupportedSensorTypeTestCase(unittest.TestCase):
 
         self.assertFalse(camera.fetch_attributes("Motion", 1)[0])
 
+    def test_process_stream_logs_packet_without_event_type(self):
+        camera = make_camera()
+        tree = ET.fromstring(
+            ALERT_XML.replace("<eventType>{etype}</eventType>", "")
+            .format(extra="<channelName>doroga</channelName>"))
+
+        with self.assertLogs("pyhik.hikvision", level=logging.DEBUG) as logs:
+            camera.process_stream(tree)
+
+        ignored = [line for line in logs.output
+                   if "carries no event type" in line]
+        self.assertEqual(len(ignored), 1)
+        # The raw packet, namespace included, is in the log line.
+        self.assertIn("doroga", ignored[0])
+        self.assertIn("http://www.hikvision.com/ver20/XMLSchema", ignored[0])
+        self.assertFalse(camera.fetch_attributes("Motion", 1)[0])
+
     def test_process_stream_still_handles_known_event_type(self):
         camera = make_camera()
         camera.process_stream(alert())

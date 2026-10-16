@@ -958,7 +958,13 @@ class HikCamera(object):
         raw_etype = self.element_text(tree, 'eventType')
         if raw_etype is None:
             # Nothing identifies the event, so there is nothing to report.
-            _LOGGING.debug('Alert packet carries no event type, ignoring.')
+            # Log the packet itself: without it there is no way to tell from
+            # a user's debug log whether the type is missing, nested
+            # elsewhere, or sitting in a namespace we did not expect.
+            if _LOGGING.isEnabledFor(logging.DEBUG):
+                _LOGGING.debug(
+                    'Alert packet carries no event type, ignoring: %s',
+                    ET.tostring(tree, encoding='unicode'))
             return
 
         try:
