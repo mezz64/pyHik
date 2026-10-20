@@ -24,6 +24,7 @@ from pyhik.isapi import (
     InputPort,
     EventState,
     DeviceCapabilities,
+    RawResponse,
 )
 
 
@@ -391,6 +392,86 @@ class TestISAPIClientMethods(unittest.TestCase):
         snapshot = client.get_snapshot(channel=1)
 
         self.assertEqual(snapshot, b"\xff\xd8\xff\xe0")
+
+
+class TestISAPIClientRawRequest(unittest.TestCase):
+    """Tests for ISAPIClient.request_raw."""
+
+    def setUp(self):
+        self.client = ISAPIClient(host="192.168.1.100", username="admin", password="pw")
+        # Skip auth detection; it is covered elsewhere.
+        self.client._auth = MagicMock()
+        self.client._session = MagicMock()
+
+    @staticmethod
+    def _response(status=200, content=b"<ok/>", headers=None):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.content = content
+        resp.headers = headers or {"Content-Type": "application/xml"}
+        return resp
+
+    def test_get_returns_unparsed_response(self):
+        self.client._session.request.return_value = self._response(
+            content=b"<A xmlns=\"x\"><B xmlns=\"x\">1</B></A>"
+        )
+        result = self.client.request_raw("GET", "/ISAPI/Image/channels/1")
+        self.assertIsInstance(result, RawResponse)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.content, b"<A xmlns=\"x\"><B xmlns=\"x\">1</B></A>")
+        args, kwargs = self.client._session.request.call_args
+        self.assertEqual(args, ("GET", "http://192.168.1.100:80/ISAPI/Image/channels/1"))
+        self.assertIsNone(kwargs["data"])
+        self.assertIsNone(kwargs["headers"])
+
+    def test_put_sends_body_unchanged(self):
+        body = "<A xmlns=\"x\"><B xmlns=\"x\">1</B></A>"
+        self.client._session.request.return_value = self._response()
+        self.client.request_raw("put", "/ISAPI/Image/channels/1", body)
+        args, kwargs = self.client._session.request.call_args
+        self.assertEqual(args[0], "PUT")
+        self.assertEqual(kwargs["data"], body.encode("utf-8"))
+        self.assertEqual(kwargs["headers"], {"Content-Type": "application/xml"})
+
+    def test_bytes_body_passed_through(self):
+        self.client._session.request.return_value = self._response()
+        self.client.request_raw("PUT", "/x", b"<A/>")
+        self.assertEqual(self.client._session.request.call_args[1]["data"], b"<A/>")
+
+    def test_error_status_is_returned_not_raised(self):
+        for status in (400, 401, 403, 404, 500):
+            with self.subTest(status=status):
+                self.client._session.request.return_value = self._response(
+                    status=status, content=b"<ResponseStatus/>"
+                )
+                result = self.client.request_raw("PUT", "/x", "<A/>")
+                self.assertFalse(result.ok)
+                self.assertEqual(result.status_code, status)
+                self.assertEqual(result.text, "<ResponseStatus/>")
+
+    def test_connection_errors_raise(self):
+        for exc in (
+            requests.exceptions.ConnectionError(),
+            requests.exceptions.Timeout(),
+            requests.exceptions.RequestException(),
+        ):
+            with self.subTest(exc=type(exc).__name__):
+                self.client._session.request.side_effect = exc
+                with self.assertRaises(ISAPIConnectionError):
+                    self.client.request_raw("GET", "/x")
+
+    def test_invalid_method_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            self.client.request_raw("FETCH", "/x")
+
+    def test_text_replaces_undecodable_bytes(self):
+        self.client._session.request.return_value = self._response(content=b"\xff<a/>")
+        self.assertIn("<a/>", self.client.request_raw("GET", "/x").text)
+
+    def test_params_forwarded(self):
+        self.client._session.request.return_value = self._response()
+        self.client.request_raw("GET", "/x", params={"a": 1})
+        self.assertEqual(self.client._session.request.call_args[1]["params"], {"a": 1})
 
 
 class TestDataClasses(unittest.TestCase):

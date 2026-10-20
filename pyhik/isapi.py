@@ -165,6 +165,31 @@ class DeviceCapabilities:
     num_io_inputs: int = 0
 
 
+@dataclass
+class RawResponse:
+    """Unparsed response from :meth:`ISAPIClient.request_raw`.
+
+    Unlike :meth:`ISAPIClient.request`, nothing is parsed and HTTP error
+    statuses are not turned into exceptions, so the caller sees the exact
+    bytes the device sent (including the ``ResponseStatus`` body that
+    accompanies most ISAPI errors).
+    """
+
+    status_code: int
+    content: bytes
+    headers: Dict[str, str] = field(default_factory=dict)
+
+    @property
+    def ok(self) -> bool:
+        """Return True for a 2xx status."""
+        return 200 <= self.status_code < 300
+
+    @property
+    def text(self) -> str:
+        """Return the body decoded as UTF-8 (undecodable bytes replaced)."""
+        return self.content.decode("utf-8", errors="replace")
+
+
 class ISAPIClient:
     """Client for Hikvision ISAPI.
 
@@ -814,6 +839,68 @@ class ISAPIClient:
     def reboot(self) -> None:
         """Reboot the device."""
         self.request(HTTPMethod.PUT, ENDPOINT_REBOOT)
+
+    def request_raw(
+        self,
+        method: str,
+        endpoint: str,
+        body: Optional[Union[str, bytes]] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> RawResponse:
+        """Make an ISAPI request without parsing the request or the response.
+
+        Some devices only accept a PUT whose XML is byte-for-byte what they
+        sent, apart from the edited values (for example, repeated ``xmlns``
+        declarations on child elements must be preserved). Converting the
+        document to a dictionary and back, as :meth:`request` does, loses
+        that. This method sends ``body`` exactly as given and returns the
+        response exactly as received.
+
+        HTTP error statuses (including 401, 403 and 404) are returned in the
+        :class:`RawResponse` rather than raised, because the response body
+        usually carries the device's ``subStatusCode``. Only transport
+        failures raise.
+
+        Args:
+            method: HTTP method (GET, PUT, POST, DELETE).
+            endpoint: ISAPI endpoint path.
+            body: Optional request body, sent as ``application/xml``. A
+                ``str`` is encoded as UTF-8.
+            params: Optional query parameters.
+
+        Returns:
+            The unparsed response.
+
+        Raises:
+            ISAPIConnectionError: Connection failed or timed out.
+        """
+        self._detect_auth_method()
+
+        data = body.encode("utf-8") if isinstance(body, str) else body
+        headers = {"Content-Type": "application/xml"} if data is not None else None
+
+        try:
+            response = self._session.request(
+                HTTPMethod(method.upper()).value,
+                f"{self.base_url}{endpoint}",
+                auth=self._auth,
+                params=params,
+                data=data,
+                headers=headers,
+                timeout=REQUEST_TIMEOUT,
+            )
+        except requests.exceptions.ConnectionError as err:
+            raise ISAPIConnectionError(f"Cannot connect to {self.host}") from err
+        except requests.exceptions.Timeout as err:
+            raise ISAPIConnectionError(f"Timeout connecting to {self.host}") from err
+        except requests.exceptions.RequestException as err:
+            raise ISAPIConnectionError(f"Request failed: {err}") from err
+
+        return RawResponse(
+            status_code=response.status_code,
+            content=response.content,
+            headers=dict(response.headers),
+        )
 
     def custom_request(
         self,
