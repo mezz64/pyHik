@@ -12,7 +12,9 @@ import xml.etree.ElementTree as ET
 
 from unittest.mock import call, MagicMock, patch, PropertyMock
 from requests.auth import HTTPDigestAuth
-from pyhik.hikvision import HikCamera, inject_events_into_camera
+from pyhik.hikvision import (
+    HikCamera, get_video_channels, inject_events_into_camera
+)
 from pyhik.constants import (
     CONNECT_TIMEOUT, DOWNLOAD_TIMEOUT, NVR_DEVICE, VALID_NOTIFICATION_METHODS
 )
@@ -1157,6 +1159,108 @@ class PartialAlertPacketTestCase(unittest.TestCase):
 
         self.assertTrue(camera.fetch_attributes("Motion", 1)[0])
         self.assertEqual(len(published), 1)
+
+
+HIK_NS = "http://www.hikvision.com/ver20/XMLSchema"
+ISAPI_NS = "http://www.isapi.org/ver20/XMLSchema"
+
+
+def ok_response(text):
+    return MagicMock(status_code=requests.codes.ok, ok=True, text=text)
+
+
+class NamespaceTestCase(unittest.TestCase):
+    """Devices disagree on the XML namespace: hikvision.com, isapi.org, none
+    at all, or one on the root and another on its children. Lookups must
+    match elements by local name whatever namespace they carry."""
+
+    def test_alert_without_a_namespace(self):
+        camera = make_camera()
+        camera.process_stream(ET.fromstring(
+            ALERT_XML.replace(' xmlns="%s"' % HIK_NS, "").format(
+                etype="VMD", extra="")))
+
+        self.assertTrue(camera.fetch_attributes("Motion", 1)[0])
+
+    def test_alert_with_children_in_another_namespace(self):
+        camera = make_camera()
+        tree = ET.Element("{%s}EventNotificationAlert" % HIK_NS)
+        for name, text in (("channelID", "1"), ("eventType", "VMD"),
+                           ("eventState", "active")):
+            ET.SubElement(tree, "{%s}%s" % (ISAPI_NS, name)).text = text
+
+        camera.process_stream(tree)
+
+        self.assertTrue(camera.fetch_attributes("Motion", 1)[0])
+
+    def test_alert_detection_target_in_another_namespace(self):
+        camera = make_camera()
+        camera.process_stream(alert(extra=(
+            '<DetectionRegionList xmlns="%s"><DetectionRegionEntry>'
+            '<detectionTarget>human</detectionTarget>'
+            '</DetectionRegionEntry></DetectionRegionList>' % ISAPI_NS)))
+
+        self.assertEqual(camera.fetch_attributes("Motion", 1)[4], "human")
+
+    def _triggers(self, text):
+        camera = make_camera()
+        camera.hik_request = MagicMock()
+        camera.hik_request.get.return_value = ok_response(text)
+        return camera.get_event_triggers()
+
+    def test_triggers_without_a_namespace(self):
+        events = self._triggers(
+            EVENT_TRIGGERS_XML.replace(' xmlns="%s"' % HIK_NS, ""))
+
+        self.assertEqual(sorted(events["VMD"]), [4, 5])
+
+    def test_triggers_with_children_in_another_namespace(self):
+        events = self._triggers(EVENT_TRIGGERS_XML.replace(
+            '<EventTrigger version="2.0">',
+            '<EventTrigger xmlns="%s" version="2.0">' % ISAPI_NS))
+
+        self.assertEqual(sorted(events["VMD"]), [4, 5])
+
+    def test_device_info_without_a_namespace(self):
+        camera = make_camera()
+        camera.hik_request = MagicMock()
+        camera.hik_request.get.return_value = ok_response(
+            '<DeviceInfo><deviceName>TestCam</deviceName>'
+            '<deviceID>12345678901</deviceID></DeviceInfo>')
+
+        info = camera.get_device_info()
+
+        self.assertEqual(info["deviceName"], "TestCam")
+        self.assertEqual(info["deviceID"], "12345678901")
+
+    def test_motion_detection_keeps_the_device_namespace(self):
+        camera = make_camera()
+        camera.hik_request = MagicMock()
+        camera.hik_request.get.return_value = ok_response(
+            XML.replace(HIK_NS, ISAPI_NS).format("false"))
+        camera.hik_request.put.return_value = ok_response("")
+
+        self.assertFalse(camera.get_motion_detection())
+        camera.enable_motion_detection()
+
+        sent = ET.fromstring(camera.hik_request.put.call_args.kwargs["data"])
+        self.assertEqual(sent.tag, "{%s}MotionDetection" % ISAPI_NS)
+        self.assertEqual(sent.find("{%s}enabled" % ISAPI_NS).text, "true")
+        self.assertTrue(camera.current_motion_detection_state)
+
+    @patch("pyhik.hikvision.requests.Session")
+    def test_video_channels_with_children_in_another_namespace(
+            self, mock_session):
+        mock_session.return_value.get.return_value = ok_response(
+            '<VideoInputChannelList xmlns="%s">'
+            '<VideoInputChannel xmlns="%s"><id>1</id><name>Door</name>'
+            '<enabled>true</enabled></VideoInputChannel>'
+            '</VideoInputChannelList>' % (HIK_NS, ISAPI_NS))
+
+        channels = get_video_channels("localhost", 80, "admin", "pass")
+
+        self.assertEqual([(c.id, c.name, c.enabled) for c in channels],
+                         [(1, "Door", True)])
 
 
 if __name__ == "__main__":
