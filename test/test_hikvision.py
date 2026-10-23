@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 
 from unittest.mock import call, MagicMock, patch, PropertyMock
 from requests.auth import HTTPDigestAuth
+from pyhik import hikvision
 from pyhik.hikvision import HikCamera, inject_events_into_camera
 from pyhik.constants import (
     CONNECT_TIMEOUT, DOWNLOAD_TIMEOUT, NVR_DEVICE, VALID_NOTIFICATION_METHODS
@@ -765,20 +766,37 @@ class UnsupportedSensorTypeTestCase(unittest.TestCase):
 
     def test_process_stream_logs_packet_without_event_type(self):
         camera = make_camera()
-        tree = ET.fromstring(
-            ALERT_XML.replace("<eventType>{etype}</eventType>", "")
-            .format(extra="<channelName>doroga</channelName>"))
+        raw = (ALERT_XML.replace("<eventType>{etype}</eventType>", "")
+               .format(extra="<channelName>doroga</channelName>"))
+        tree = ET.fromstring(raw)
 
         with self.assertLogs("pyhik.hikvision", level=logging.DEBUG) as logs:
-            camera.process_stream(tree)
+            camera.process_stream(tree, raw)
+            # A device repeating the packet does not flood the log.
+            camera.process_stream(tree, raw)
 
         ignored = [line for line in logs.output
                    if "carries no event type" in line]
         self.assertEqual(len(ignored), 1)
-        # The raw packet, namespace included, is in the log line.
+        # The raw packet, namespace declaration included, is in the log line.
         self.assertIn("doroga", ignored[0])
-        self.assertIn("http://www.hikvision.com/ver20/XMLSchema", ignored[0])
+        self.assertIn('xmlns="http://www.hikvision.com/ver20/XMLSchema"',
+                      ignored[0])
         self.assertFalse(camera.fetch_attributes("Motion", 1)[0])
+
+    def test_process_stream_caps_logged_packet_length(self):
+        camera = make_camera()
+        raw = (ALERT_XML.replace("<eventType>{etype}</eventType>", "")
+               .format(extra="<channelName>%s</channelName>" % ("x" * 5000)))
+
+        with self.assertLogs("pyhik.hikvision", level=logging.DEBUG) as logs:
+            camera.process_stream(ET.fromstring(raw), raw)
+
+        ignored = [line for line in logs.output
+                   if "carries no event type" in line]
+        self.assertEqual(len(ignored), 1)
+        self.assertLess(len(ignored[0]),
+                        hikvision.UNTYPED_PACKET_LOG_LIMIT + 200)
 
     def test_process_stream_still_handles_known_event_type(self):
         camera = make_camera()
