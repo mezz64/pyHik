@@ -11,11 +11,12 @@ Licensed under the MIT license.
 from dataclasses import dataclass, field
 from enum import Enum
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Mapping, Optional, Union
 from urllib.parse import quote, urlparse, urlunparse
 
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
+from requests.structures import CaseInsensitiveDict
 
 try:
     import xmltodict
@@ -177,7 +178,7 @@ class RawResponse:
 
     status_code: int
     content: bytes
-    headers: Dict[str, str] = field(default_factory=dict)
+    headers: Mapping[str, str] = field(default_factory=CaseInsensitiveDict)
 
     @property
     def ok(self) -> bool:
@@ -859,7 +860,10 @@ class ISAPIClient:
         HTTP error statuses (including 401, 403 and 404) are returned in the
         :class:`RawResponse` rather than raised, because the response body
         usually carries the device's ``subStatusCode``. Only transport
-        failures raise.
+        failures raise. The one exception to "returned as is" is a 401: the
+        authentication method is detected again and the request is retried
+        once before the 401 is returned. The response headers are
+        case-insensitive, as in ``requests``.
 
         Args:
             method: HTTP method (GET, PUT, POST, DELETE).
@@ -874,14 +878,38 @@ class ISAPIClient:
         Raises:
             ISAPIConnectionError: Connection failed or timed out.
         """
-        self._detect_auth_method()
-
+        http_method = HTTPMethod(method.upper()).value
         data = body.encode("utf-8") if isinstance(body, str) else body
         headers = {"Content-Type": "application/xml"} if data is not None else None
 
+        self._detect_auth_method()
+        response = self._send_raw(http_method, endpoint, data, params, headers)
+        if response.status_code == requests.codes.unauthorized:
+            # The authentication method is detected once and then cached; if
+            # that detection failed for a temporary reason it can have settled
+            # on the wrong one. Detect again and retry once.
+            self._auth = None
+            self._detect_auth_method()
+            response = self._send_raw(http_method, endpoint, data, params, headers)
+
+        return RawResponse(
+            status_code=response.status_code,
+            content=response.content,
+            headers=CaseInsensitiveDict(response.headers),
+        )
+
+    def _send_raw(
+        self,
+        http_method: str,
+        endpoint: str,
+        data: Optional[bytes],
+        params: Optional[Dict[str, Any]],
+        headers: Optional[Dict[str, str]],
+    ) -> requests.Response:
+        """Send one request with the current authentication."""
         try:
-            response = self._session.request(
-                HTTPMethod(method.upper()).value,
+            return self._session.request(
+                http_method,
                 f"{self.base_url}{endpoint}",
                 auth=self._auth,
                 params=params,
@@ -895,12 +923,6 @@ class ISAPIClient:
             raise ISAPIConnectionError(f"Timeout connecting to {self.host}") from err
         except requests.exceptions.RequestException as err:
             raise ISAPIConnectionError(f"Request failed: {err}") from err
-
-        return RawResponse(
-            status_code=response.status_code,
-            content=response.content,
-            headers=dict(response.headers),
-        )
 
     def custom_request(
         self,

@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
 
 import requests
+from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
 # xmltodict is an optional extra (pip install pyHik[isapi]); tests that need
 # response parsing are skipped when it isn't installed.
@@ -439,7 +440,7 @@ class TestISAPIClientRawRequest(unittest.TestCase):
         self.assertEqual(self.client._session.request.call_args[1]["data"], b"<A/>")
 
     def test_error_status_is_returned_not_raised(self):
-        for status in (400, 401, 403, 404, 500):
+        for status in (400, 403, 404, 500):
             with self.subTest(status=status):
                 self.client._session.request.return_value = self._response(
                     status=status, content=b"<ResponseStatus/>"
@@ -448,6 +449,34 @@ class TestISAPIClientRawRequest(unittest.TestCase):
                 self.assertFalse(result.ok)
                 self.assertEqual(result.status_code, status)
                 self.assertEqual(result.text, "<ResponseStatus/>")
+
+    def test_401_detects_authentication_again_and_retries_once(self):
+        # Detection settled on Basic after a temporary failure; the device wants Digest.
+        self.client._auth = HTTPBasicAuth("admin", "pw")
+        digest_ok = self._response(status=200)
+        self.client._session.get.return_value = digest_ok
+        self.client._session.request.side_effect = [
+            self._response(status=401),
+            self._response(status=200, content=b"<ok/>"),
+        ]
+        result = self.client.request_raw("GET", "/x")
+        self.assertTrue(result.ok)
+        self.assertIsInstance(self.client._auth, HTTPDigestAuth)
+        self.assertEqual(self.client._session.request.call_count, 2)
+        self.assertIsInstance(self.client._session.request.call_args_list[0][1]["auth"], HTTPBasicAuth)
+        self.assertIsInstance(self.client._session.request.call_args_list[1][1]["auth"], HTTPDigestAuth)
+
+    def test_401_is_retried_only_once(self):
+        self.client._session.get.return_value = self._response(status=401)
+        self.client._session.request.return_value = self._response(
+            status=401, content=b"<ResponseStatus/>"
+        )
+        result = self.client.request_raw("PUT", "/x", "<A/>")
+        self.assertEqual(result.status_code, 401)
+        self.assertEqual(self.client._session.request.call_count, 2)
+        # The body is sent again unchanged.
+        for call in self.client._session.request.call_args_list:
+            self.assertEqual(call[1]["data"], b"<A/>")
 
     def test_connection_errors_raise(self):
         for exc in (
