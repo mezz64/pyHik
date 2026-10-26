@@ -244,20 +244,24 @@ class ISAPIClient:
         if self._auth is not None:
             return
 
-        url = f"{self.base_url}{ENDPOINT_DEVICE_INFO}"
-
         # Try digest auth first (more common for Hikvision)
-        try:
-            digest_auth = HTTPDigestAuth(self.username, self.password)
-            response = self._session.get(url, auth=digest_auth, timeout=REQUEST_TIMEOUT)
-            if response.status_code == 200:
-                self._auth = digest_auth
-                return
-        except Exception:
-            pass
+        digest_auth = self._check_digest_auth()
+        if digest_auth is not None:
+            self._auth = digest_auth
+            return
 
         # Fall back to basic auth
         self._auth = HTTPBasicAuth(self.username, self.password)
+
+    def _check_digest_auth(self) -> Optional[HTTPDigestAuth]:
+        """Return Digest authentication if the device accepts it, else None."""
+        url = f"{self.base_url}{ENDPOINT_DEVICE_INFO}"
+        digest_auth = HTTPDigestAuth(self.username, self.password)
+        try:
+            response = self._session.get(url, auth=digest_auth, timeout=REQUEST_TIMEOUT)
+        except Exception:
+            return None
+        return digest_auth if response.status_code == 200 else None
 
     def _parse_xml(self, text: str) -> Dict[str, Any]:
         """Parse XML response to dictionary."""
@@ -860,10 +864,11 @@ class ISAPIClient:
         HTTP error statuses (including 401, 403 and 404) are returned in the
         :class:`RawResponse` rather than raised, because the response body
         usually carries the device's ``subStatusCode``. Only transport
-        failures raise. The one exception to "returned as is" is a 401: the
-        authentication method is detected again and the request is retried
-        once before the 401 is returned. The response headers are
-        case-insensitive, as in ``requests``.
+        failures raise. The one exception to "returned as is" is a 401 with
+        cached authentication: if the device accepts Digest authentication,
+        the request is retried once with it; otherwise the 401 is returned and
+        the cached authentication is kept. The response headers are case-insensitive, as in
+        ``requests``.
 
         Args:
             method: HTTP method (GET, PUT, POST, DELETE).
@@ -882,15 +887,19 @@ class ISAPIClient:
         data = body.encode("utf-8") if isinstance(body, str) else body
         headers = {"Content-Type": "application/xml"} if data is not None else None
 
+        just_detected = self._auth is None
         self._detect_auth_method()
         response = self._send_raw(http_method, endpoint, data, params, headers)
-        if response.status_code == requests.codes.unauthorized:
-            # The authentication method is detected once and then cached; if
-            # that detection failed for a temporary reason it can have settled
-            # on the wrong one. Detect again and retry once.
-            self._auth = None
-            self._detect_auth_method()
-            response = self._send_raw(http_method, endpoint, data, params, headers)
+        if response.status_code == requests.codes.unauthorized and not just_detected:
+            # Detection falls back to Basic after any failure, so a temporary
+            # one can leave the client on Basic for good. Switch to Digest only
+            # if the device accepts it, so a working method is never replaced
+            # (for example while the device is locked out after failed logins).
+            # Skipped when detection has just checked Digest for this request.
+            digest_auth = self._check_digest_auth()
+            if digest_auth is not None:
+                self._auth = digest_auth
+                response = self._send_raw(http_method, endpoint, data, params, headers)
 
         return RawResponse(
             status_code=response.status_code,
