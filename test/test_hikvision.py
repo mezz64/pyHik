@@ -284,6 +284,7 @@ class GetEventTriggersTestCase(unittest.TestCase):
         session.get.side_effect = [
             MagicMock(status_code=401),
             MagicMock(status_code=404),
+            MagicMock(status_code=404),  # triggersCap fallback
         ]
         with self.assertLogs("pyhik.hikvision", level="ERROR") as logs:
             self.assertIsNone(camera.get_event_triggers())
@@ -333,6 +334,101 @@ class URLParsingTestCase(unittest.TestCase):
         camera = HikCamera(host="camera.local", port=80)
         self.assertEqual(camera.host, "camera.local")
         self.assertEqual(camera.root_url, "http://camera.local:80")
+
+
+TRIGGERS_CAP_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<EventTriggersCap version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<NicbrokenTriggerCap>
+</NicbrokenTriggerCap>
+<IpconflictTriggerCap>
+</IpconflictTriggerCap>
+<IllaccesTriggerCap>
+<isSupportCenter>true</isSupportCenter>
+<isSupportEmail>true</isSupportEmail>
+</IllaccesTriggerCap>
+<MotionDetectionTriggerCap>
+<isSupportCenter>true</isSupportCenter>
+<isSupportFTP>true</isSupportFTP>
+<isSupportEmail>true</isSupportEmail>
+</MotionDetectionTriggerCap>
+</EventTriggersCap>"""
+
+DISKFULL_ERROR_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<ResponseStatus version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<statusCode>3</statusCode>
+<statusString>Device Error</statusString>
+<subStatusCode>deviceError</subStatusCode>
+<description>isapi_get_event_triggerinfo error: diskfull ;</description>
+</ResponseStatus>"""
+
+
+def _fake_get(url_to_response):
+    """Build a session.get that answers by URL path (404 if unlisted)."""
+    def _get(url, **kwargs):
+        path = url.split('localhost:80', 1)[-1]
+        status, text = url_to_response.get(path, (404, ""))
+        resp = MagicMock()
+        resp.status_code = status
+        resp.text = text
+        return resp
+    return _get
+
+
+class TriggersCapFallbackTestCase(unittest.TestCase):
+    def _camera(self, mock_session, responses):
+        mock_session.return_value.get.side_effect = _fake_get(responses)
+        return HikCamera(host="localhost")
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    def test_fallback_when_triggers_return_500(self, mock_info, mock_session):
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        camera = self._camera(mock_session, {
+            "/ISAPI/Event/triggers": (500, DISKFULL_ERROR_XML),
+            "/Event/triggers": (500, DISKFULL_ERROR_XML),
+            "/ISAPI/Event/triggersCap": (200, TRIGGERS_CAP_XML),
+        })
+        events = camera.get_event_triggers()
+        self.assertEqual(events, {
+            "VMD": [1], "nicbroken": [1], "ipconflict": [1], "illaccess": [1]})
+        self.assertEqual(camera.device_type, "CAM")
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    def test_initialize_creates_event_states(self, mock_info, mock_session):
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        camera = self._camera(mock_session, {
+            "/ISAPI/Event/triggers": (500, DISKFULL_ERROR_XML),
+            "/Event/triggers": (500, DISKFULL_ERROR_XML),
+            "/ISAPI/Event/triggersCap": (200, TRIGGERS_CAP_XML),
+            "/ISAPI/System/Video/inputs/channels/1/motionDetection": (404, ""),
+        })
+        camera.initialize()
+        self.assertEqual(
+            sorted(camera.event_states),
+            ["IP Conflict", "Illegal Access", "Motion", "Net Interface Broken"])
+        self.assertEqual(camera.event_states["Motion"][0][1], 1)
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    def test_no_events_when_triggers_cap_also_fails(self, mock_info, mock_session):
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        camera = self._camera(mock_session, {
+            "/ISAPI/Event/triggers": (500, DISKFULL_ERROR_XML),
+            "/Event/triggers": (500, DISKFULL_ERROR_XML),
+            "/ISAPI/Event/triggersCap": (404, ""),
+        })
+        self.assertIsNone(camera.get_event_triggers())
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    def test_triggers_cap_unused_when_triggers_work(self, mock_info, mock_session):
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        camera = self._camera(mock_session, {
+            "/ISAPI/Event/triggers": (200, EVENT_TRIGGERS_XML),
+        })
+        events = camera.get_event_triggers()
+        self.assertEqual(sorted(events["VMD"]), [4, 5])
 
 
 class InjectEventsTestCase(unittest.TestCase):
@@ -454,10 +550,11 @@ class ThreadSafetyTestCase(unittest.TestCase):
         unauthorized_resp = MagicMock(status_code=requests.codes.unauthorized)
         ok_resp = MagicMock(status_code=requests.codes.ok, text=device_info_xml)
         # get_device_info: 1st call → 401, 2nd call (digest) → 200
-        # get_event_triggers: → not_found (skip)
+        # get_event_triggers: → not_found twice, then triggersCap → not_found
         # get_motion_detection: → not_found (skip)
         not_found_resp = MagicMock(status_code=requests.codes.not_found)
-        api_session.get.side_effect = [unauthorized_resp, ok_resp, not_found_resp, not_found_resp, not_found_resp]
+        api_session.get.side_effect = [unauthorized_resp, ok_resp, not_found_resp, not_found_resp, not_found_resp,
+                                    not_found_resp]
 
         camera = HikCamera(host="localhost", usr="admin", pwd="pass")
 

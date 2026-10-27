@@ -39,7 +39,8 @@ from pyhik.constants import (
     CAM_DEVICE, NVR_DEVICE, CONNECT_TIMEOUT, READ_TIMEOUT, SNAPSHOT_TIMEOUT,
     RECORDING_SEARCH_TIMEOUT, DOWNLOAD_TIMEOUT, CONTEXT_INFO, CONTEXT_TRIG,
     CONTEXT_MOTION, CONTEXT_ALERT, CHANNEL_NAMES, ID_TYPES,
-    VALID_NOTIFICATION_METHODS, __version__)
+    VALID_NOTIFICATION_METHODS, TRIGGERS_CAP_SUFFIX, TRIGGERS_CAP_EVENTS,
+    __version__)
 
 # Register the default namespace to avoid ns0: prefixes in serialized XML
 ET.register_namespace('', XML_NAMESPACE)
@@ -655,6 +656,11 @@ class HikCamera(object):
                 return None
             break
         else:
+            events = self.get_event_triggers_from_capabilities()
+            if events:
+                _LOGGING.debug('Triggers unavailable (%s); using triggersCap.',
+                               ', '.join(statuses))
+                return events
             # 401/403 means the account may not read the event config,
             # not that the firmware is too old to have it.
             _LOGGING.error('Unable to fetch event triggers from %s: %s',
@@ -734,6 +740,51 @@ class HikCamera(object):
 
         _LOGGING.debug('Found events: %s', events)
 
+        return events
+
+    def get_event_triggers_from_capabilities(self):
+        """
+        Derive supported events from /ISAPI/Event/triggersCap.
+
+        Some cameras (e.g. DS-2CD3366WDV3-I, firmware V5.8.22) answer HTTP 500
+        on the triggers URLs when no storage is present, but still list the
+        events they support in triggersCap. Those are single-channel cameras,
+        so every event is reported on channel 1.
+
+        Returns a dict in the same shape as get_event_triggers, or None.
+        """
+        try:
+            response = self.hik_request.get(
+                '%s/ISAPI/Event/triggersCap' % self.root_url,
+                timeout=CONNECT_TIMEOUT)
+            if response.status_code != requests.codes.ok:
+                _LOGGING.debug('triggersCap returned status %s.',
+                               response.status_code)
+                return None
+            root = ET.fromstring(response.text)
+        except (requests.exceptions.RequestException, ET.ParseError) as err:
+            _LOGGING.debug('Unable to fetch triggersCap, error: %s', err)
+            return None
+
+        events = {}
+        for child in root:
+            # Match on the local name so any namespace works.
+            name = child.tag.split('}')[-1]
+            if not name.endswith(TRIGGERS_CAP_SUFFIX):
+                continue
+            key = name[:-len(TRIGGERS_CAP_SUFFIX)].lower()
+            event = TRIGGERS_CAP_EVENTS.get(key, key)
+            if event.lower() not in SENSOR_MAP:
+                _LOGGING.debug('Ignoring unsupported triggersCap entry %s.',
+                               name)
+                continue
+            events[event] = [1]
+
+        if not events:
+            return None
+
+        self.device_type = CAM_DEVICE
+        _LOGGING.debug('Found events from triggersCap: %s', events)
         return events
 
     def watchdog_handler(self):
