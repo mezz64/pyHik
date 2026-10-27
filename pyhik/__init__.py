@@ -15,6 +15,7 @@ from pyhik.isapi import (
     ISAPIConnectionError,
     ISAPIAuthError,
     ISAPINotFoundError,
+    RawResponse,
     StorageDevice,
     AlarmServerInfo,
     StreamInfo,
@@ -41,6 +42,7 @@ __all__ = [
     'ISAPIConnectionError',
     'ISAPIAuthError',
     'ISAPINotFoundError',
+    'RawResponse',
     # Data classes
     'StorageDevice',
     'AlarmServerInfo',
