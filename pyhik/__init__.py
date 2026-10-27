@@ -15,6 +15,7 @@ from pyhik.isapi import (
     ISAPIConnectionError,
     ISAPIAuthError,
     ISAPINotFoundError,
+    ISAPINotSupportedError,
     RawResponse,
     StorageDevice,
     AlarmServerInfo,
@@ -24,6 +25,12 @@ from pyhik.isapi import (
     InputPort,
     EventState,
     DeviceCapabilities,
+)
+from pyhik.image import (
+    ImageSetting,
+    ImageSettingType,
+    parse_image_capabilities,
+    parse_image_values,
 )
 
 __all__ = [
@@ -42,6 +49,7 @@ __all__ = [
     'ISAPIConnectionError',
     'ISAPIAuthError',
     'ISAPINotFoundError',
+    'ISAPINotSupportedError',
     'RawResponse',
     # Data classes
     'StorageDevice',
@@ -52,4 +60,9 @@ __all__ = [
     'InputPort',
     'EventState',
     'DeviceCapabilities',
+    # Image settings
+    'ImageSetting',
+    'ImageSettingType',
+    'parse_image_capabilities',
+    'parse_image_values',
 ]
