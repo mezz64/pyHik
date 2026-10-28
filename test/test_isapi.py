@@ -26,6 +26,7 @@ from pyhik.isapi import (
     EventState,
     DeviceCapabilities,
     RawResponse,
+    parse_sub_status,
 )
 
 
@@ -536,6 +537,47 @@ class TestISAPIClientRawRequest(unittest.TestCase):
         self.client._session.request.return_value = self._response()
         self.client.request_raw("GET", "/x", params={"a": 1})
         self.assertEqual(self.client._session.request.call_args[1]["params"], {"a": 1})
+
+
+class TestParseSubStatus(unittest.TestCase):
+    """parse_sub_status() reads the subStatusCode of any ISAPI ResponseStatus body."""
+
+    def test_reads_sub_status(self):
+        for body in (
+            b'<ResponseStatus xmlns="x"><subStatusCode>notSupport</subStatusCode></ResponseStatus>',
+            b'<?xml version="1.0" encoding="UTF-8"?>\n<ResponseStatus version="2.0" '
+            b'xmlns="http://www.hikvision.com/ver20/XMLSchema"><requestURL>/x</requestURL>'
+            b"<statusCode>4</statusCode><statusString>Invalid Operation</statusString>"
+            b"<subStatusCode>notSupport</subStatusCode></ResponseStatus>",
+            b"<ResponseStatus><subStatusCode>notSupport</subStatusCode></ResponseStatus>",
+            b"<ResponseStatus><subStatusCode>\n  notSupport \n</subStatusCode></ResponseStatus>",
+            b'\n  <?xml version="1.0"?><ResponseStatus><subStatusCode>notSupport</subStatusCode></ResponseStatus>\n',
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(parse_sub_status(body), "notSupport")
+                self.assertEqual(parse_sub_status(body.decode()), "notSupport")
+
+    def test_empty_when_there_is_no_sub_status(self):
+        for body in (
+            b"",
+            b"   ",
+            b"<html>nope",
+            b"<html><body>401 Unauthorized</body></html>",
+            b"<ResponseStatus/>",
+            b"<ResponseStatus><statusCode>1</statusCode></ResponseStatus>",
+            b"<ResponseStatus><subStatusCode/></ResponseStatus>",
+            # Only a ResponseStatus document counts.
+            b"<A><subStatusCode>notSupport</subStatusCode></A>",
+            # Only a direct child counts.
+            b"<ResponseStatus><x><subStatusCode>notSupport</subStatusCode></x></ResponseStatus>",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(parse_sub_status(body), "")
+
+    def test_utf8_text_is_accepted(self):
+        body = "<ResponseStatus><subStatusCode>caf\u00e9</subStatusCode></ResponseStatus>"
+        self.assertEqual(parse_sub_status(body), "caf\u00e9")
+        self.assertEqual(parse_sub_status(body.encode("utf-8")), "caf\u00e9")
 
 
 class TestDataClasses(unittest.TestCase):
