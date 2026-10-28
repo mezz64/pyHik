@@ -11,11 +11,19 @@ Licensed under the MIT license.
 from dataclasses import dataclass, field
 from enum import Enum
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Mapping, Optional, Union
+import xml.etree.ElementTree as ET
 from urllib.parse import quote, urlparse, urlunparse
 
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
+from requests.structures import CaseInsensitiveDict
+
+from pyhik.image import (
+    ImageSetting,
+    parse_image_capabilities,
+    parse_image_values,
+)
 
 try:
     import xmltodict
@@ -37,6 +45,7 @@ ENDPOINT_HOLIDAYS = "/ISAPI/System/Holidays"
 ENDPOINT_REBOOT = "/ISAPI/System/reboot"
 ENDPOINT_EVENT_TRIGGERS = "/ISAPI/Event/triggers"
 ENDPOINT_SMART_CAPABILITIES = "/ISAPI/Smart/capabilities"
+ENDPOINT_IMAGE_CHANNEL = "/ISAPI/Image/channels/{channel}"
 
 # Event detection endpoints
 EVENT_ENDPOINTS: Dict[str, str] = {
@@ -65,7 +74,21 @@ class HTTPMethod(Enum):
 
 
 class ISAPIError(Exception):
-    """Base ISAPI error."""
+    """Base ISAPI error.
+
+    ``status_code`` and ``sub_status`` carry the HTTP status and the device's
+    ``subStatusCode`` (e.g. ``notSupport``) when the error came from a response.
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        status_code: Optional[int] = None,
+        sub_status: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.sub_status = sub_status or None
 
 
 class ISAPIConnectionError(ISAPIError):
@@ -78,6 +101,36 @@ class ISAPIAuthError(ISAPIError):
 
 class ISAPINotFoundError(ISAPIError):
     """Resource not found error."""
+
+
+class ISAPINotSupportedError(ISAPINotFoundError):
+    """The device does not support the requested endpoint or feature.
+
+    Raised for a 404 or 501, or for any error response whose body says
+    ``notSupport``. Callers that only care about "not found" can keep catching
+    :class:`ISAPINotFoundError`.
+    """
+
+
+def parse_sub_status(content: Union[str, bytes]) -> str:
+    """Return the ``subStatusCode`` of a ``ResponseStatus`` body.
+
+    Devices describe most errors in such a body (e.g. ``notSupport``). Returns
+    an empty string if the body is not a ResponseStatus document (any
+    namespace) or has no sub status code.
+    """
+    if isinstance(content, str):
+        content = content.encode("utf-8")
+    try:
+        root = ET.fromstring(content.strip())
+    except ET.ParseError:
+        return ""
+    if root.tag.rsplit("}", 1)[-1].lower() != "responsestatus":
+        return ""
+    for child in root:
+        if child.tag.rsplit("}", 1)[-1] == "subStatusCode":
+            return (child.text or "").strip()
+    return ""
 
 
 @dataclass
@@ -165,6 +218,31 @@ class DeviceCapabilities:
     num_io_inputs: int = 0
 
 
+@dataclass
+class RawResponse:
+    """Unparsed response from :meth:`ISAPIClient.request_raw`.
+
+    Unlike :meth:`ISAPIClient.request`, nothing is parsed and HTTP error
+    statuses are not turned into exceptions, so the caller sees the exact
+    bytes the device sent (including the ``ResponseStatus`` body that
+    accompanies most ISAPI errors).
+    """
+
+    status_code: int
+    content: bytes
+    headers: Mapping[str, str] = field(default_factory=CaseInsensitiveDict)
+
+    @property
+    def ok(self) -> bool:
+        """Return True for a 2xx status."""
+        return 200 <= self.status_code < 300
+
+    @property
+    def text(self) -> str:
+        """Return the body decoded as UTF-8 (undecodable bytes replaced)."""
+        return self.content.decode("utf-8", errors="replace")
+
+
 class ISAPIClient:
     """Client for Hikvision ISAPI.
 
@@ -218,20 +296,24 @@ class ISAPIClient:
         if self._auth is not None:
             return
 
-        url = f"{self.base_url}{ENDPOINT_DEVICE_INFO}"
-
         # Try digest auth first (more common for Hikvision)
-        try:
-            digest_auth = HTTPDigestAuth(self.username, self.password)
-            response = self._session.get(url, auth=digest_auth, timeout=REQUEST_TIMEOUT)
-            if response.status_code == 200:
-                self._auth = digest_auth
-                return
-        except Exception:
-            pass
+        digest_auth = self._check_digest_auth()
+        if digest_auth is not None:
+            self._auth = digest_auth
+            return
 
         # Fall back to basic auth
         self._auth = HTTPBasicAuth(self.username, self.password)
+
+    def _check_digest_auth(self) -> Optional[HTTPDigestAuth]:
+        """Return Digest authentication if the device accepts it, else None."""
+        url = f"{self.base_url}{ENDPOINT_DEVICE_INFO}"
+        digest_auth = HTTPDigestAuth(self.username, self.password)
+        try:
+            response = self._session.get(url, auth=digest_auth, timeout=REQUEST_TIMEOUT)
+        except Exception:
+            return None
+        return digest_auth if response.status_code == 200 else None
 
     def _parse_xml(self, text: str) -> Dict[str, Any]:
         """Parse XML response to dictionary."""
@@ -814,6 +896,161 @@ class ISAPIClient:
     def reboot(self) -> None:
         """Reboot the device."""
         self.request(HTTPMethod.PUT, ENDPOINT_REBOOT)
+
+    def request_raw(
+        self,
+        method: str,
+        endpoint: str,
+        body: Optional[Union[str, bytes]] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> RawResponse:
+        """Make an ISAPI request without parsing the request or the response.
+
+        Some devices only accept a PUT whose XML is byte-for-byte what they
+        sent, apart from the edited values (for example, repeated ``xmlns``
+        declarations on child elements must be preserved). Converting the
+        document to a dictionary and back, as :meth:`request` does, loses
+        that. This method sends ``body`` exactly as given and returns the
+        response exactly as received.
+
+        HTTP error statuses (including 401, 403 and 404) are returned in the
+        :class:`RawResponse` rather than raised, because the response body
+        usually carries the device's ``subStatusCode``. Only transport
+        failures raise. The one exception to "returned as is" is a 401 with
+        cached authentication: if the device accepts Digest authentication,
+        the request is retried once with it; otherwise the 401 is returned and
+        the cached authentication is kept. The response headers are case-insensitive, as in
+        ``requests``.
+
+        Args:
+            method: HTTP method (GET, PUT, POST, DELETE).
+            endpoint: ISAPI endpoint path.
+            body: Optional request body, sent as ``application/xml``. A
+                ``str`` is encoded as UTF-8.
+            params: Optional query parameters.
+
+        Returns:
+            The unparsed response.
+
+        Raises:
+            ISAPIConnectionError: Connection failed or timed out.
+        """
+        http_method = HTTPMethod(method.upper()).value
+        data = body.encode("utf-8") if isinstance(body, str) else body
+        headers = {"Content-Type": "application/xml"} if data is not None else None
+
+        just_detected = self._auth is None
+        self._detect_auth_method()
+        response = self._send_raw(http_method, endpoint, data, params, headers)
+        if response.status_code == requests.codes.unauthorized and not just_detected:
+            # Detection falls back to Basic after any failure, so a temporary
+            # one can leave the client on Basic for good. Switch to Digest only
+            # if the device accepts it, so a working method is never replaced
+            # (for example while the device is locked out after failed logins).
+            # Skipped when detection has just checked Digest for this request.
+            digest_auth = self._check_digest_auth()
+            if digest_auth is not None:
+                self._auth = digest_auth
+                response = self._send_raw(http_method, endpoint, data, params, headers)
+
+        return RawResponse(
+            status_code=response.status_code,
+            content=response.content,
+            headers=CaseInsensitiveDict(response.headers),
+        )
+
+    def _send_raw(
+        self,
+        http_method: str,
+        endpoint: str,
+        data: Optional[bytes],
+        params: Optional[Dict[str, Any]],
+        headers: Optional[Dict[str, str]],
+    ) -> requests.Response:
+        """Send one request with the current authentication."""
+        try:
+            return self._session.request(
+                http_method,
+                f"{self.base_url}{endpoint}",
+                auth=self._auth,
+                params=params,
+                data=data,
+                headers=headers,
+                timeout=REQUEST_TIMEOUT,
+            )
+        except requests.exceptions.ConnectionError as err:
+            raise ISAPIConnectionError(f"Cannot connect to {self.host}") from err
+        except requests.exceptions.Timeout as err:
+            raise ISAPIConnectionError(f"Timeout connecting to {self.host}") from err
+        except requests.exceptions.RequestException as err:
+            raise ISAPIConnectionError(f"Request failed: {err}") from err
+
+    def _get_raw_ok(self, endpoint: str) -> bytes:
+        """GET an endpoint unparsed, raising a specific ISAPI error on failure.
+
+        Raises:
+            ISAPIAuthError: 401, or 403 that is not a "not supported" reply.
+            ISAPINotSupportedError: 404, 501, or a body saying ``notSupport``.
+            ISAPIError: Any other error status.
+        """
+        response = self.request_raw("GET", endpoint)
+        if response.ok:
+            return response.content
+
+        status = response.status_code
+        sub_status = parse_sub_status(response.content)
+        if status == 401:
+            raise ISAPIAuthError("Invalid credentials", status, sub_status)
+        if sub_status == "notSupport" or status in (404, 501):
+            raise ISAPINotSupportedError(
+                f"Not supported by the device: {endpoint}", status, sub_status
+            )
+        if status == 403:
+            raise ISAPIAuthError("Insufficient permissions", status, sub_status)
+        raise ISAPIError(f"Request failed with status {status}", status, sub_status)
+
+    def get_image_settings(self, channel: int = 1) -> List[ImageSetting]:
+        """Discover the image settings a channel supports, with current values.
+
+        Reads ``/ISAPI/Image/channels/<channel>/capabilities`` and
+        ``/ISAPI/Image/channels/<channel>``. If the device has no current
+        values endpoint (404), the defaults in the capabilities document are
+        used instead. See :mod:`pyhik.image`.
+
+        Raises:
+            ISAPIConnectionError: Connection failed.
+            ISAPIAuthError: Authentication failed or not permitted.
+            ISAPINotFoundError: The device has no image capabilities endpoint.
+            ISAPIError: Other request errors, or an unparsable response.
+        """
+        endpoint = ENDPOINT_IMAGE_CHANNEL.format(channel=channel)
+        capabilities = self._get_raw_ok(f"{endpoint}/capabilities")
+        try:
+            values: Optional[bytes] = self._get_raw_ok(endpoint)
+        except ISAPINotFoundError:
+            values = None
+        try:
+            return parse_image_capabilities(capabilities, values)
+        except ET.ParseError as err:
+            raise ISAPIError(f"Invalid image settings XML: {err}") from err
+
+    def get_image_values(self, channel: int = 1) -> Dict[str, str]:
+        """Read the current image setting values as ``{path: value}``.
+
+        Cheaper than :meth:`get_image_settings` for periodic polling: one
+        request, no capabilities.
+
+        Raises:
+            ISAPIConnectionError: Connection failed.
+            ISAPIAuthError: Authentication failed or not permitted.
+            ISAPINotFoundError: The device has no image settings endpoint.
+            ISAPIError: Other request errors, or an unparsable response.
+        """
+        content = self._get_raw_ok(ENDPOINT_IMAGE_CHANNEL.format(channel=channel))
+        try:
+            return parse_image_values(content)
+        except ET.ParseError as err:
+            raise ISAPIError(f"Invalid image settings XML: {err}") from err
 
     def custom_request(
         self,
