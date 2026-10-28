@@ -49,9 +49,9 @@ _LOGGING = logging.getLogger(__name__)
 
 # Known firmware returning a finite, non-functional 40-byte alertStream.
 # Keep matching exact: other firmware versions may behave differently.
-_BROKEN_ALERT_STREAM_DEVICE = (
-    'DS-KV8113-WME1(B)', 'V2.2.53', 'build 230918'
-)
+_BROKEN_ALERT_STREAM_DEVICES = [
+    ('DS-KV8113-WME1(B)', 'V2.2.53', 'build 230918'),
+]
 
 
 @dataclass
@@ -771,9 +771,9 @@ class HikCamera(object):
         self.kill_thrd.clear()
 
     def start_stream(self):
-        """Start event stream unless this exact firmware has a broken one."""
+        """Start event stream unless model/firmware matches a broken one."""
         if (self.device_model, self.firmware_version,
-                self.firmware_build) == _BROKEN_ALERT_STREAM_DEVICE:
+                self.firmware_build) in _BROKEN_ALERT_STREAM_DEVICES:
             _LOGGING.info('Skipping non-functional alertStream on %s (%s %s)',
                           self.device_model, self.firmware_version,
                           self.firmware_build)

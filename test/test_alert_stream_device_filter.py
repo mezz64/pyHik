@@ -3,7 +3,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from pyhik.hikvision import HikCamera, _BROKEN_ALERT_STREAM_DEVICE
+from pyhik.hikvision import HikCamera, _BROKEN_ALERT_STREAM_DEVICES
 
 
 DEVICE_INFO = {
@@ -30,9 +30,10 @@ class AlertStreamDeviceFilterTests(unittest.TestCase):
 
     def test_reported_device_id_matches_known_firmware(self):
         camera = make_camera()
-        self.assertEqual(
+        self.assertIsInstance(_BROKEN_ALERT_STREAM_DEVICES, list)
+        self.assertIn(
             (camera.device_model, camera.firmware_version, camera.firmware_build),
-            _BROKEN_ALERT_STREAM_DEVICE,
+            _BROKEN_ALERT_STREAM_DEVICES,
         )
 
     def test_known_firmware_never_starts_thread_or_event_requests(self):
@@ -46,6 +47,19 @@ class AlertStreamDeviceFilterTests(unittest.TestCase):
         camera.hik_request_stream.get.assert_not_called()
         camera.disconnect()
         self.assertFalse(camera.kill_thrd.is_set())
+
+    def test_additional_device_can_be_added_without_changing_start_stream(self):
+        additional = ('EXAMPLE-INTERCOM', 'V9.9.9', 'build 999999')
+        with patch('pyhik.hikvision._BROKEN_ALERT_STREAM_DEVICES',
+                   _BROKEN_ALERT_STREAM_DEVICES + [additional]):
+            camera = make_camera(
+                model=additional[0],
+                firmwareVersion=additional[1],
+                firmwareReleasedDate=additional[2],
+            )
+            camera.start_stream()
+            self.assertIsNone(camera.thrd.ident)
+            camera.disconnect()
 
     def test_other_models_or_firmware_still_start_stream(self):
         variants = (
