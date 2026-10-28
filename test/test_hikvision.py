@@ -280,11 +280,11 @@ class GetEventTriggersTestCase(unittest.TestCase):
         """Test that a failed triggers fetch logs each URL's HTTP status."""
         mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
         session = mock_session.return_value
+        session.get.return_value = MagicMock(status_code=404)
         camera = HikCamera(host="localhost")
         session.get.side_effect = [
             MagicMock(status_code=401),
             MagicMock(status_code=404),
-            MagicMock(status_code=404),  # triggersCap fallback
         ]
         with self.assertLogs("pyhik.hikvision", level="ERROR") as logs:
             self.assertIsNone(camera.get_event_triggers())
@@ -429,6 +429,39 @@ class TriggersCapFallbackTestCase(unittest.TestCase):
         })
         events = camera.get_event_triggers()
         self.assertEqual(sorted(events["VMD"]), [4, 5])
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    def test_nvr_keeps_type_and_urls_on_500(self, mock_info, mock_session):
+        mock_info.return_value = {
+            "deviceName": "Test", "deviceID": "12345678901",
+            "deviceType": "NVR"}
+        camera = self._camera(mock_session, {
+            "/ISAPI/Event/triggers": (500, DISKFULL_ERROR_XML),
+            "/Event/triggers": (500, DISKFULL_ERROR_XML),
+            "/ISAPI/Event/triggersCap": (200, TRIGGERS_CAP_XML),
+            "/ISAPI/System/Video/inputs/channels/1/motionDetection": (404, ""),
+        })
+        camera.usr, camera.pwd = "u", "p"
+        camera.initialize()
+        self.assertEqual(camera.device_type, "NVR")
+        self.assertIn("Motion", camera.event_states)
+        self.assertEqual(
+            camera.get_stream_url(channel=2),
+            "rtsp://u:p@localhost:554/Streaming/Channels/201")
+
+    @patch("pyhik.hikvision.requests.Session")
+    @patch("pyhik.hikvision.HikCamera.get_device_info")
+    def test_no_fallback_without_5xx(self, mock_info, mock_session):
+        mock_info.return_value = {"deviceName": "Test", "deviceID": "12345678901"}
+        for status in (401, 403, 404):
+            camera = self._camera(mock_session, {
+                "/ISAPI/Event/triggers": (status, ""),
+                "/Event/triggers": (status, ""),
+                "/ISAPI/Event/triggersCap": (200, TRIGGERS_CAP_XML),
+            })
+            self.assertIsNone(camera.get_event_triggers())
+            self.assertIsNone(camera.device_type)
 
 
 class InjectEventsTestCase(unittest.TestCase):

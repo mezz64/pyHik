@@ -514,6 +514,12 @@ class HikCamera(object):
             self.event_states = None
             return
 
+        # Recorders (NVR/DVR) use different snapshot and stream URLs than
+        # cameras, so remember what deviceInfo says the device is.
+        info_type = (device_info.get('deviceType') or '').lower()
+        if 'nvr' in info_type or 'dvr' in info_type:
+            self.device_type = NVR_DEVICE
+
         for key in device_info:
             if key == 'deviceName':
                 self.name = device_info[key]
@@ -640,6 +646,7 @@ class HikCamera(object):
         )
         response = {}
         statuses = []
+        codes = []
 
         for url in urls:
             try:
@@ -647,6 +654,7 @@ class HikCamera(object):
                 if response.status_code != requests.codes.ok:
                     # Try next alternate URL for triggers
                     statuses.append('%s -> %s' % (url % '', response.status_code))
+                    codes.append(response.status_code)
                     _LOGGING.debug('Trying alternate triggers URL.')
                     continue
 
@@ -656,11 +664,14 @@ class HikCamera(object):
                 return None
             break
         else:
-            events = self.get_event_triggers_from_capabilities()
-            if events:
-                _LOGGING.debug('Triggers unavailable (%s); using triggersCap.',
-                               ', '.join(statuses))
-                return events
+            # Only a server error (e.g. 500 with a full disk) means the
+            # device has events it cannot list here; 401/403/404 do not.
+            if any(500 <= code < 600 for code in codes):
+                events = self.get_event_triggers_from_capabilities()
+                if events:
+                    _LOGGING.debug('Triggers unavailable (%s); using triggersCap.',
+                                   ', '.join(statuses))
+                    return events
             # 401/403 means the account may not read the event config,
             # not that the firmware is too old to have it.
             _LOGGING.error('Unable to fetch event triggers from %s: %s',
@@ -749,7 +760,9 @@ class HikCamera(object):
         Some cameras (e.g. DS-2CD3366WDV3-I, firmware V5.8.22) answer HTTP 500
         on the triggers URLs when no storage is present, but still list the
         events they support in triggersCap. Those are single-channel cameras,
-        so every event is reported on channel 1.
+        so every event is reported on channel 1. The device type comes from
+        deviceInfo (set in initialize); a recorder keeps its NVR type and
+        only a device with no known type is treated as a camera.
 
         Returns a dict in the same shape as get_event_triggers, or None.
         """
@@ -783,7 +796,8 @@ class HikCamera(object):
         if not events:
             return None
 
-        self.device_type = CAM_DEVICE
+        if self.device_type is None:
+            self.device_type = CAM_DEVICE
         _LOGGING.debug('Found events from triggersCap: %s', events)
         return events
 
