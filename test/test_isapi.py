@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
 
 import requests
+from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
 # xmltodict is an optional extra (pip install pyHik[isapi]); tests that need
 # response parsing are skipped when it isn't installed.
@@ -24,6 +25,8 @@ from pyhik.isapi import (
     InputPort,
     EventState,
     DeviceCapabilities,
+    RawResponse,
+    parse_sub_status,
 )
 
 
@@ -391,6 +394,190 @@ class TestISAPIClientMethods(unittest.TestCase):
         snapshot = client.get_snapshot(channel=1)
 
         self.assertEqual(snapshot, b"\xff\xd8\xff\xe0")
+
+
+class TestISAPIClientRawRequest(unittest.TestCase):
+    """Tests for ISAPIClient.request_raw."""
+
+    def setUp(self):
+        self.client = ISAPIClient(host="192.168.1.100", username="admin", password="pw")
+        # Skip auth detection; it is covered elsewhere.
+        self.client._auth = MagicMock()
+        self.client._session = MagicMock()
+
+    @staticmethod
+    def _response(status=200, content=b"<ok/>", headers=None):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.content = content
+        resp.headers = headers or {"Content-Type": "application/xml"}
+        return resp
+
+    def test_get_returns_unparsed_response(self):
+        self.client._session.request.return_value = self._response(
+            content=b"<A xmlns=\"x\"><B xmlns=\"x\">1</B></A>"
+        )
+        result = self.client.request_raw("GET", "/ISAPI/Image/channels/1")
+        self.assertIsInstance(result, RawResponse)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.content, b"<A xmlns=\"x\"><B xmlns=\"x\">1</B></A>")
+        args, kwargs = self.client._session.request.call_args
+        self.assertEqual(args, ("GET", "http://192.168.1.100:80/ISAPI/Image/channels/1"))
+        self.assertIsNone(kwargs["data"])
+        self.assertIsNone(kwargs["headers"])
+
+    def test_put_sends_body_unchanged(self):
+        body = "<A xmlns=\"x\"><B xmlns=\"x\">1</B></A>"
+        self.client._session.request.return_value = self._response()
+        self.client.request_raw("put", "/ISAPI/Image/channels/1", body)
+        args, kwargs = self.client._session.request.call_args
+        self.assertEqual(args[0], "PUT")
+        self.assertEqual(kwargs["data"], body.encode("utf-8"))
+        self.assertEqual(kwargs["headers"], {"Content-Type": "application/xml"})
+
+    def test_bytes_body_passed_through(self):
+        self.client._session.request.return_value = self._response()
+        self.client.request_raw("PUT", "/x", b"<A/>")
+        self.assertEqual(self.client._session.request.call_args[1]["data"], b"<A/>")
+
+    def test_error_status_is_returned_not_raised(self):
+        for status in (400, 403, 404, 500):
+            with self.subTest(status=status):
+                self.client._session.request.return_value = self._response(
+                    status=status, content=b"<ResponseStatus/>"
+                )
+                result = self.client.request_raw("PUT", "/x", "<A/>")
+                self.assertFalse(result.ok)
+                self.assertEqual(result.status_code, status)
+                self.assertEqual(result.text, "<ResponseStatus/>")
+
+    def test_401_switches_a_client_stuck_on_basic_to_digest(self):
+        # Detection settled on Basic after a temporary failure; the device wants Digest.
+        self.client._auth = HTTPBasicAuth("admin", "pw")
+        self.client._session.get.return_value = self._response(status=200)
+        self.client._session.request.side_effect = [
+            self._response(status=401),
+            self._response(status=200, content=b"<ok/>"),
+        ]
+        result = self.client.request_raw("GET", "/x")
+        self.assertTrue(result.ok)
+        self.assertIsInstance(self.client._auth, HTTPDigestAuth)
+        self.assertEqual(self.client._session.request.call_count, 2)
+        self.assertIsInstance(self.client._session.request.call_args_list[0][1]["auth"], HTTPBasicAuth)
+        self.assertIsInstance(self.client._session.request.call_args_list[1][1]["auth"], HTTPDigestAuth)
+
+    def test_401_keeps_the_cached_authentication_when_digest_is_not_accepted(self):
+        # For example while the device is locked out after failed logins.
+        for cached in (HTTPDigestAuth("admin", "pw"), HTTPBasicAuth("admin", "pw")):
+            for check in (
+                self._response(status=401),
+                requests.exceptions.ConnectionError("unreachable"),
+            ):
+                with self.subTest(cached=type(cached).__name__, check=check):
+                    self.client._auth = cached
+                    self.client._session.reset_mock()
+                    self.client._session.get.side_effect = (
+                        check if isinstance(check, Exception) else [check]
+                    )
+                    self.client._session.request.return_value = self._response(status=401)
+                    result = self.client.request_raw("GET", "/x")
+                    self.assertEqual(result.status_code, 401)
+                    self.assertIs(self.client._auth, cached)
+                    # No retry: it would only add a failed login.
+                    self.assertEqual(self.client._session.request.call_count, 1)
+
+    def test_401_right_after_detection_is_not_checked_again(self):
+        # Detection has just checked Digest for this request, so a second check
+        # would only add a failed login (for example with a wrong password).
+        for detected in (401, 200):
+            with self.subTest(digest_check=detected):
+                self.client._auth = None
+                self.client._session.reset_mock()
+                self.client._session.get.side_effect = [self._response(status=detected)]
+                self.client._session.request.return_value = self._response(status=401)
+                result = self.client.request_raw("GET", "/x")
+                self.assertEqual(result.status_code, 401)
+                self.assertEqual(self.client._session.get.call_count, 1)
+                self.assertEqual(self.client._session.request.call_count, 1)
+
+    def test_401_is_retried_only_once(self):
+        self.client._auth = HTTPDigestAuth("admin", "pw")
+        self.client._session.get.return_value = self._response(status=200)
+        self.client._session.request.return_value = self._response(
+            status=401, content=b"<ResponseStatus/>"
+        )
+        result = self.client.request_raw("PUT", "/x", "<A/>")
+        self.assertEqual(result.status_code, 401)
+        self.assertEqual(self.client._session.request.call_count, 2)
+        self.assertIsInstance(self.client._auth, HTTPDigestAuth)
+        # The body is sent again unchanged.
+        for call in self.client._session.request.call_args_list:
+            self.assertEqual(call[1]["data"], b"<A/>")
+
+    def test_connection_errors_raise(self):
+        for exc in (
+            requests.exceptions.ConnectionError(),
+            requests.exceptions.Timeout(),
+            requests.exceptions.RequestException(),
+        ):
+            with self.subTest(exc=type(exc).__name__):
+                self.client._session.request.side_effect = exc
+                with self.assertRaises(ISAPIConnectionError):
+                    self.client.request_raw("GET", "/x")
+
+    def test_invalid_method_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            self.client.request_raw("FETCH", "/x")
+
+    def test_text_replaces_undecodable_bytes(self):
+        self.client._session.request.return_value = self._response(content=b"\xff<a/>")
+        self.assertIn("<a/>", self.client.request_raw("GET", "/x").text)
+
+    def test_params_forwarded(self):
+        self.client._session.request.return_value = self._response()
+        self.client.request_raw("GET", "/x", params={"a": 1})
+        self.assertEqual(self.client._session.request.call_args[1]["params"], {"a": 1})
+
+
+class TestParseSubStatus(unittest.TestCase):
+    """parse_sub_status() reads the subStatusCode of any ISAPI ResponseStatus body."""
+
+    def test_reads_sub_status(self):
+        for body in (
+            b'<ResponseStatus xmlns="x"><subStatusCode>notSupport</subStatusCode></ResponseStatus>',
+            b'<?xml version="1.0" encoding="UTF-8"?>\n<ResponseStatus version="2.0" '
+            b'xmlns="http://www.hikvision.com/ver20/XMLSchema"><requestURL>/x</requestURL>'
+            b"<statusCode>4</statusCode><statusString>Invalid Operation</statusString>"
+            b"<subStatusCode>notSupport</subStatusCode></ResponseStatus>",
+            b"<ResponseStatus><subStatusCode>notSupport</subStatusCode></ResponseStatus>",
+            b"<ResponseStatus><subStatusCode>\n  notSupport \n</subStatusCode></ResponseStatus>",
+            b'\n  <?xml version="1.0"?><ResponseStatus><subStatusCode>notSupport</subStatusCode></ResponseStatus>\n',
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(parse_sub_status(body), "notSupport")
+                self.assertEqual(parse_sub_status(body.decode()), "notSupport")
+
+    def test_empty_when_there_is_no_sub_status(self):
+        for body in (
+            b"",
+            b"   ",
+            b"<html>nope",
+            b"<html><body>401 Unauthorized</body></html>",
+            b"<ResponseStatus/>",
+            b"<ResponseStatus><statusCode>1</statusCode></ResponseStatus>",
+            b"<ResponseStatus><subStatusCode/></ResponseStatus>",
+            # Only a ResponseStatus document counts.
+            b"<A><subStatusCode>notSupport</subStatusCode></A>",
+            # Only a direct child counts.
+            b"<ResponseStatus><x><subStatusCode>notSupport</subStatusCode></x></ResponseStatus>",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(parse_sub_status(body), "")
+
+    def test_utf8_text_is_accepted(self):
+        body = "<ResponseStatus><subStatusCode>caf\u00e9</subStatusCode></ResponseStatus>"
+        self.assertEqual(parse_sub_status(body), "caf\u00e9")
+        self.assertEqual(parse_sub_status(body.encode("utf-8")), "caf\u00e9")
 
 
 class TestDataClasses(unittest.TestCase):

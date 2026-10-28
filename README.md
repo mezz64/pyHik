@@ -98,6 +98,22 @@ with ISAPIClient('X.X.X.X', port=80, username='admin', password='1234') as clien
 * `get_rtsp_url(channel=1, stream_type=1, include_credentials=True)` - build an RTSP stream URL
 * `reboot()` - reboot the device
 * `custom_request(...)` - issue an arbitrary ISAPI request for endpoints not otherwise wrapped
+* `request_raw(method, endpoint, body=None)` - like `custom_request` but sends the body unmodified and returns the unparsed response (`RawResponse`: status code, bytes, case-insensitive headers) without raising on HTTP error statuses (after a 401 the request is retried once with Digest auth)
+* `get_image_settings(channel=1)` - list the image settings a camera supports (shutter, gain, WDR, BLC, day/night, ...) with their current values (`ImageSetting` objects, see `pyhik.image`)
+* `get_image_values(channel=1)` - read only the current values as `{path: value}`; cheap enough to poll
+
+### Image settings
+
+Cameras expose their image settings (shutter, gain, WDR, BLC, day/night, supplement light, ...) under `/ISAPI/Image/channels/<n>`. Which settings exist differs per model, so they are discovered from the device:
+
+```python
+client = ISAPIClient("192.168.1.100", username="admin", password="secret")
+settings = {s.path: s for s in client.get_image_settings()}
+settings["Color/brightnessLevel"].value    # '80'
+settings["Shutter/ShutterLevel"].options   # ['1/3', '1/6', ..., '1/100000']
+```
+
+Reading raises `ISAPINotSupportedError` (a subclass of `ISAPINotFoundError`) if the device does not offer the endpoint (404, 501 or a `notSupport` reply), `ISAPIAuthError` for credential or permission problems and `ISAPIConnectionError` if the device cannot be reached. These exceptions carry `status_code` and `sub_status`, the HTTP status and the device's `subStatusCode`.
 
 # TODO
 
