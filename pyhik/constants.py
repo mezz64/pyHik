@@ -56,6 +56,14 @@ SENSOR_MAP = {
     'thermometry': "Thermometry"
 }
 
+# triggersCap lists <Name>TriggerCap elements; map the ones whose name
+# differs from the event type used in /Event/triggers.
+TRIGGERS_CAP_SUFFIX = 'TriggerCap'
+TRIGGERS_CAP_EVENTS = {
+    'motiondetection': 'VMD',
+    'illacces': 'illaccess',
+}
+
 # The name 'id' should always be last
 CHANNEL_NAMES = ['dynVideoInputChannelID', 'videoInputChannelID',
                  'dynInputIOPortID', 'inputIOPortID',
