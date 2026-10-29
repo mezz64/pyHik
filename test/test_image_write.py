@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 
 from pyhik.image import (
+    NO_SUB_STATUS,
     ImageSetting,
     ImageSettingType,
     ImageWriteResult,
@@ -25,7 +26,7 @@ from pyhik.image import (
     raw_insert_after,
     raw_replace,
 )
-from pyhik.isapi import ISAPIClient, ISAPIError
+from pyhik.isapi import ISAPIAuthError, ISAPIClient, ISAPIError
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CAPS = (FIXTURES / "image_capabilities_fixed_basic-DS-2CD2385G1.xml").read_bytes()
@@ -270,7 +271,7 @@ class TestParseResponseStatus(unittest.TestCase):
         # An unknown sub status on a 403 is reported as is.
         self.assertEqual(ImageWriteResult(False, 403, "somethingNew").error_description, "somethingNew")
         # No sub status at all on a 403 is still read as a rights problem.
-        self.assertIn("permission", ImageWriteResult(False, 403, "ok").error_description)
+        self.assertIn("permission", ImageWriteResult(False, 403, NO_SUB_STATUS).error_description)
 
 
 class TestPutImageSettings(unittest.TestCase):
@@ -658,6 +659,189 @@ class TestLinkedSettings(unittest.TestCase):
         camera = FakeCamera(VALUES.replace("<BLC ", "<BLCX ").replace("</BLC>", "</BLCX>"))
         result = client_for(camera).set_image_linked_setting(self.blc, "UP")
         self.assertEqual(result.sub_status, "pathNotFound")
+
+
+HTML_ERROR_PAGE = b"<html><head><title>401</title></head><body>Unauthorized</body></html>"
+
+
+class RejectingCamera(FakeCamera):
+    """A FakeCamera that answers chosen requests with a fixed reply.
+
+    ``rules`` maps ``(method, path)`` to ``(status, body)`` or to a list of
+    them, used one per request (the last one repeats). The device-info check
+    that follows a 401 is rejected too, so the client does not switch
+    authentication and retry.
+    """
+
+    def __init__(self, rules, **kwargs):
+        super().__init__(**kwargs)
+        self.rules = {key: list(v) if isinstance(v, list) else [v] for key, v in rules.items()}
+        self.calls = []
+
+    def request(self, method, url, **kwargs):
+        path = urlparse(url).path
+        self.calls.append((method, path))
+        if path == "/ISAPI/System/deviceInfo":
+            return MagicMock(status_code=401, content=HTML_ERROR_PAGE, headers={})
+        queue = self.rules.get((method, path))
+        if queue:
+            status, body = queue.pop(0) if len(queue) > 1 else queue[0]
+            resp = MagicMock(headers={}, status_code=status, content=body)
+            resp.text = body.decode()
+            resp.ok = status < 400
+            return resp
+        return super().request(method, url, **kwargs)
+
+
+class TestUnauthorizedWrites(unittest.TestCase):
+    """A 401 on a write raises ISAPIAuthError, as it does on a read."""
+
+    def assert_auth_error(self, call, camera):
+        with self.assertRaises(ISAPIAuthError) as ctx:
+            call()
+        self.assertEqual(ctx.exception.status_code, 401)
+        return ctx.exception
+
+    def test_put_with_html_body(self):
+        camera = RejectingCamera({("PUT", IMAGE): (401, HTML_ERROR_PAGE)})
+        self.assert_auth_error(
+            lambda: client_for(camera).put_image_settings({"Shutter/ShutterLevel": "1/500"}),
+            camera,
+        )
+        self.assertEqual(camera.xml, VALUES)
+
+    def test_put_with_response_status_body(self):
+        camera = RejectingCamera({("PUT", IMAGE): (401, response_status(False, "badAuthorization"))})
+        err = self.assert_auth_error(
+            lambda: client_for(camera).put_image_settings({"Shutter/ShutterLevel": "1/500"}),
+            camera,
+        )
+        self.assertEqual(err.sub_status, "badAuthorization")
+
+    def test_put_with_empty_body(self):
+        camera = RejectingCamera({("PUT", IMAGE): (401, b"")})
+        self.assert_auth_error(
+            lambda: client_for(camera).set_image_setting("Shutter/ShutterLevel", "1/500"), camera
+        )
+
+    def test_set_image_setting_does_not_retry(self):
+        camera = RejectingCamera({("PUT", IMAGE): (401, HTML_ERROR_PAGE)})
+        self.assert_auth_error(
+            lambda: client_for(camera).set_image_setting("WDR/mode", "open"), camera
+        )
+        self.assertEqual(camera.calls.count(("PUT", IMAGE)), 1)
+
+    def test_enable_and_mode(self):
+        xml = VALUES.replace("<enabled>true</enabled>\n<BLCMode>AUTO</BLCMode>", "<enabled>false</enabled>")
+        camera = RejectingCamera({("PUT", IMAGE): (401, HTML_ERROR_PAGE)}, xml=xml)
+        self.assert_auth_error(
+            lambda: client_for(camera).put_image_setting_with_enable(
+                "BLC/enabled", "BLC/BLCMode", "AUTO"
+            ),
+            camera,
+        )
+
+    def test_linked_setting_off_and_on(self):
+        blc = {s.path: s for s in parse_image_capabilities(CAPS, VALUES.encode())}["BLC/BLCMode"]
+        for value in (blc.off_value, "AUTO"):
+            with self.subTest(value=value):
+                camera = RejectingCamera({("PUT", IMAGE): (401, HTML_ERROR_PAGE)})
+                self.assert_auth_error(
+                    lambda: client_for(camera).set_image_linked_setting(blc, value), camera
+                )
+
+    def test_sub_endpoint_get_in_put_image_settings(self):
+        camera = RejectingCamera(
+            {("GET", IMAGE + "/Shutter"): (401, HTML_ERROR_PAGE)}, full_put_supported=False
+        )
+        self.assert_auth_error(
+            lambda: client_for(camera).set_image_setting("Shutter/ShutterLevel", "1/500"), camera
+        )
+        self.assertEqual([p for m, p in camera.calls if m == "PUT"], [IMAGE])
+
+    def test_sub_endpoint_get_in_enable_and_mode(self):
+        xml = VALUES.replace("<enabled>true</enabled>\n<BLCMode>AUTO</BLCMode>", "<enabled>false</enabled>")
+        camera = RejectingCamera(
+            {("GET", IMAGE + "/BLC"): (401, HTML_ERROR_PAGE)}, xml=xml, full_put_supported=False
+        )
+        self.assert_auth_error(
+            lambda: client_for(camera).put_image_setting_with_enable(
+                "BLC/enabled", "BLC/BLCMode", "UP"
+            ),
+            camera,
+        )
+
+    def test_sub_endpoint_put(self):
+        camera = RejectingCamera(
+            {("PUT", IMAGE + "/Shutter"): (401, HTML_ERROR_PAGE)}, full_put_supported=False
+        )
+        self.assert_auth_error(
+            lambda: client_for(camera).set_image_setting("Shutter/ShutterLevel", "1/500"), camera
+        )
+
+    def test_401_while_switching_off_a_blocker(self):
+        camera = RejectingCamera(
+            {("PUT", IMAGE): [(400, response_status(False, "MutexWithWDR")), (401, HTML_ERROR_PAGE)]},
+        )
+        self.assert_auth_error(
+            lambda: client_for(camera).set_image_setting("WDR/mode", "open"), camera
+        )
+
+    def test_403_stays_a_failed_result(self):
+        camera = RejectingCamera({("PUT", IMAGE): (403, response_status(False, "lowPrivilege"))})
+        result = client_for(camera).put_image_settings({"Shutter/ShutterLevel": "1/500"})
+        self.assertEqual((result.success, result.status_code, result.sub_status), (False, 403, "lowPrivilege"))
+
+
+class TestFailureWithoutSubStatus(unittest.TestCase):
+    def test_error_page_is_not_ok(self):
+        for status in (400, 403, 404, 500, 503):
+            with self.subTest(status=status):
+                result = parse_response_status(HTML_ERROR_PAGE, status)
+                self.assertEqual((result.success, result.sub_status), (False, NO_SUB_STATUS))
+                self.assertNotEqual(result.error_description, "ok")
+                self.assertIn("HTTP %d" % status, result.error_description)
+
+    def test_401_body_is_not_ok(self):
+        result = parse_response_status(HTML_ERROR_PAGE, 401)
+        self.assertEqual((result.success, result.sub_status), (False, NO_SUB_STATUS))
+
+    def test_failure_status_without_sub_status_on_200(self):
+        body = (
+            b'<ResponseStatus xmlns="%s"><statusCode>3</statusCode>'
+            b"<statusString>Device Error</statusString></ResponseStatus>" % NS.encode()
+        )
+        result = parse_response_status(body, 200)
+        self.assertEqual((result.success, result.sub_status), (False, NO_SUB_STATUS))
+
+    def test_ok_only_for_success(self):
+        body = (
+            b'<ResponseStatus xmlns="%s"><statusCode>1</statusCode>'
+            b"<statusString>OK</statusString></ResponseStatus>" % NS.encode()
+        )
+        result = parse_response_status(body, 200)
+        self.assertEqual((result.success, result.sub_status), (True, "ok"))
+        self.assertEqual(parse_response_status(b"", 200).sub_status, "ok")
+
+    def test_a_device_sub_status_is_kept(self):
+        result = parse_response_status(response_status(False, "WDRNotDisable"), 400)
+        self.assertEqual(result.sub_status, "WDRNotDisable")
+
+    def test_403_without_sub_status_reads_as_permission_denied(self):
+        description = parse_response_status(HTML_ERROR_PAGE, 403).error_description
+        self.assertIn("permission denied", description)
+        self.assertIn("HTTP 403", description)
+
+    def test_not_a_conflict_so_nothing_is_resolved(self):
+        self.assertIsNone(conflict_resolution(NO_SUB_STATUS, "WDR/mode"))
+
+    def test_error_page_on_put_is_a_failed_result(self):
+        camera = RejectingCamera({("PUT", IMAGE): (500, HTML_ERROR_PAGE)})
+        with self.assertLogs("pyhik.isapi", "WARNING") as logs:
+            result = client_for(camera).set_image_setting("Shutter/ShutterLevel", "1/500")
+        self.assertEqual((result.success, result.status_code, result.sub_status), (False, 500, NO_SUB_STATUS))
+        self.assertIn("HTTP 500", logs.output[0])
+        self.assertNotIn("failed: ok", logs.output[0])
 
 
 if __name__ == "__main__":

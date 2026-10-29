@@ -281,9 +281,13 @@ CONFLICT_DESCRIPTIONS: Dict[str, str] = {
     ),
 }
 
+# ``sub_status`` of a failed write whose reply carries no ``subStatusCode``.
+# "ok" is used only for a successful write.
+NO_SUB_STATUS = "noSubStatus"
+
 # Sub status codes of a 403 that really are about the user's rights (devices
-# that send no sub status code are read as "ok").
-PRIVILEGE_SUB_STATUSES = frozenset({"lowPrivilege", "ok", ""})
+# that send no sub status code count too).
+PRIVILEGE_SUB_STATUSES = frozenset({"lowPrivilege", NO_SUB_STATUS, ""})
 
 
 @dataclass
@@ -293,9 +297,11 @@ class ImageWriteResult:
     Attributes:
         success: True if the device accepted the change.
         status_code: HTTP status of the last request (0 if none was sent).
-        sub_status: The device's ``subStatusCode`` (e.g. ``ok``,
-            ``WDRNotDisable``, ``notSupport``), or a pyhik-generated code
-            such as ``pathNotFound`` or ``invalidResponse``.
+        sub_status: The device's ``subStatusCode`` (e.g. ``WDRNotDisable``,
+            ``notSupport``), ``ok`` for a successful write that sent none, or
+            a pyhik-generated code such as ``pathNotFound``,
+            ``invalidResponse`` or ``noSubStatus`` (a failure whose reply has
+            no ``subStatusCode``).
         also_changed: Other settings that were changed to make room for the
             requested one, as ``{path: new value}`` (for example
             ``{"HLC/enabled": "false"}`` when turning WDR on required HLC to be
@@ -315,12 +321,15 @@ class ImageWriteResult:
         if self.sub_status in CONFLICT_DESCRIPTIONS:
             # Devices answer 403 for these too, but it is not a permission problem.
             return "%s (%s)" % (CONFLICT_DESCRIPTIONS[self.sub_status], self.sub_status)
+        detail = self.sub_status
+        if detail == NO_SUB_STATUS:
+            detail = "HTTP %d" % self.status_code
         if self.status_code == 403 and self.sub_status in PRIVILEGE_SUB_STATUSES:
             return (
                 "%s - permission denied. Check that the user has remote "
-                "configuration write privileges on the device." % self.sub_status
+                "configuration write privileges on the device." % detail
             )
-        return self.sub_status
+        return detail
 
 
 # HLCMutexWDROrDehaze (WDR or defog switched on while HLC is on) and
@@ -368,6 +377,10 @@ def parse_response_status(content: bytes, http_status: int) -> ImageWriteResult:
 
     A 200 with an empty body is taken as success, as is a "Reboot Required"
     status (the change was applied; ``sub_status`` says ``rebootRequired``).
+    A failure without a ``subStatusCode`` gets ``noSubStatus``.
+
+    A 401 is not handled here; the client raises ``ISAPIAuthError`` for it
+    before parsing the body.
     """
     if http_status == 200 and not content.strip():
         return ImageWriteResult(True, http_status, "ok")
@@ -377,13 +390,13 @@ def parse_response_status(content: bytes, http_status: int) -> ImageWriteResult:
         return ImageWriteResult(False, http_status, "invalidResponse")
     status = _child_text(root, "statusString")
     code = _child_text(root, "statusCode")
-    sub_status = _child_text(root, "subStatusCode") or "ok"
-    return ImageWriteResult(
-        success=http_status == 200
-        and (status == "OK" or code in _APPLIED_STATUS_CODES),
-        status_code=http_status,
-        sub_status=sub_status,
+    success = http_status == 200 and (status == "OK" or code in _APPLIED_STATUS_CODES)
+    # "ok" only stands for a successful write. An error page that happens to
+    # be well-formed XML has no subStatusCode either, and must not read as ok.
+    sub_status = _child_text(root, "subStatusCode") or (
+        "ok" if success else NO_SUB_STATUS
     )
+    return ImageWriteResult(success, http_status, sub_status)
 
 
 def _child_text(element: ET.Element, tag: str) -> str:

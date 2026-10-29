@@ -1015,6 +1015,19 @@ class ISAPIClient:
         except requests.exceptions.RequestException as err:
             raise ISAPIConnectionError(f"Request failed: {err}") from err
 
+    @staticmethod
+    def _raise_if_unauthorized(response: RawResponse) -> None:
+        """Raise :class:`ISAPIAuthError` for a 401, whatever the body says.
+
+        Reads and writes both use this, so a caller can tell rejected
+        credentials (to start reauthentication) from any other failure. The
+        body of a 401 is often an HTML page, not a ``ResponseStatus``.
+        """
+        if response.status_code == 401:
+            raise ISAPIAuthError(
+                "Invalid credentials", 401, parse_sub_status(response.content)
+            )
+
     def _get_raw_ok(self, endpoint: str) -> bytes:
         """GET an endpoint unparsed, raising a specific ISAPI error on failure.
 
@@ -1027,10 +1040,9 @@ class ISAPIClient:
         if response.ok:
             return response.content
 
+        self._raise_if_unauthorized(response)
         status = response.status_code
         sub_status = parse_sub_status(response.content)
-        if status == 401:
-            raise ISAPIAuthError("Invalid credentials", status, sub_status)
         if sub_status == "notSupport" or status in (404, 501):
             raise ISAPINotSupportedError(
                 f"Not supported by the device: {endpoint}", status, sub_status
@@ -1119,6 +1131,7 @@ class ISAPIClient:
 
     def _put_image_xml(self, endpoint: str, xml: str) -> ImageWriteResult:
         response = self.request_raw("PUT", endpoint, body=xml)
+        self._raise_if_unauthorized(response)
         return parse_response_status(response.content, response.status_code)
 
     def _read_image_xml(self, endpoint: str) -> str:
@@ -1150,7 +1163,10 @@ class ISAPIClient:
 
         Raises:
             ISAPIConnectionError: Connection failed.
-            ISAPIAuthError: Authentication failed or not permitted (read).
+            ISAPIAuthError: The device answered 401 to any request made here
+                (read or write), or refused the read for lack of permission.
+                A write refused with 403 is a failed result, not an error,
+                because devices also use 403 for conflicts and ``notSupport``.
             ISAPIError: The document could not be read or parsed.
         """
         endpoint = ENDPOINT_IMAGE_CHANNEL.format(channel=channel)
@@ -1181,6 +1197,7 @@ class ISAPIClient:
     ) -> ImageWriteResult:
         sub = f"{ENDPOINT_IMAGE_CHANNEL.format(channel=channel)}/{top}"
         response = self.request_raw("GET", sub)
+        self._raise_if_unauthorized(response)
         if not response.ok:
             return ImageWriteResult(False, response.status_code, "subEndpointGetFailed")
         try:
@@ -1227,6 +1244,7 @@ class ISAPIClient:
 
         sub = f"{endpoint}/{top}"
         response = self.request_raw("GET", sub)
+        self._raise_if_unauthorized(response)
         if not response.ok:
             return ImageWriteResult(False, response.status_code, "subEndpointGetFailed")
         try:
@@ -1300,8 +1318,8 @@ class ISAPIClient:
         If the device rejects the change because another setting is in the
         way (e.g. enabling WDR while BLC or HLC is on), the blocker is
         switched off first and the change is retried. Check
-        ``result.success``; connection and read errors raise as in
-        :meth:`put_image_settings`.
+        ``result.success``; connection, read and authentication (401)
+        errors raise as in :meth:`put_image_settings`.
         """
         return self._with_image_conflict_resolution(
             lambda: self.put_image_settings({path: value}, channel), path, channel
