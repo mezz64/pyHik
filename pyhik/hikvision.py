@@ -48,6 +48,12 @@ ET.register_namespace('', XML_NAMESPACE)
 
 _LOGGING = logging.getLogger(__name__)
 
+# Known firmware returning a finite, non-functional 40-byte alertStream.
+# Keep matching exact: other firmware versions may behave differently.
+_BROKEN_ALERT_STREAM_DEVICES = [
+    ('DS-KV8113-WME1(B)', 'V2.2.53', 'build 230918'),
+]
+
 
 @dataclass
 class Recording:
@@ -121,6 +127,9 @@ class HikCamera(object):
         self.cam_id = 0
         self.name = ''
         self.device_type = None
+        self.device_model = ''
+        self.firmware_version = ''
+        self.firmware_build = ''
         self.motion_detection = None
         self._motion_detection_xml = None
 
@@ -514,6 +523,12 @@ class HikCamera(object):
             self.event_states = None
             return
 
+        # Fields are already returned by the existing deviceInfo request.
+        # Missing values must leave stream behavior unchanged.
+        self.device_model = (device_info.get('model') or '').strip()
+        self.firmware_version = (device_info.get('firmwareVersion') or '').strip()
+        self.firmware_build = (device_info.get('firmwareReleasedDate') or '').strip()
+
         # Recorders (NVR/DVR) use different snapshot and stream URLs than
         # cameras, so remember what deviceInfo says the device is.
         info_type = (device_info.get('deviceType') or '').lower()
@@ -808,16 +823,26 @@ class HikCamera(object):
         self.reset_thrd.set()
 
     def disconnect(self):
-        """Disconnect from event stream."""
+        """Disconnect from event stream, including when no thread was started."""
         _LOGGING.debug('Disconnecting from stream: %s', self.name)
         self.kill_thrd.set()
-        self.thrd.join()
+        # Thread.join() raises RuntimeError if the thread was never started.
+        if self.thrd.ident is not None:
+            self.thrd.join()
+        else:
+            # No stream thread exists to close this otherwise idle session.
+            self.hik_request_stream.close()
         _LOGGING.debug('Event stream thread for %s is stopped', self.name)
         self.kill_thrd.clear()
 
     def start_stream(self):
-        """Start thread to process event stream."""
-        # self.watchdog.start()
+        """Start event stream unless model/firmware matches a broken one."""
+        if (self.device_model, self.firmware_version,
+                self.firmware_build) in _BROKEN_ALERT_STREAM_DEVICES:
+            _LOGGING.info('Skipping non-functional alertStream on %s (%s %s)',
+                          self.device_model, self.firmware_version,
+                          self.firmware_build)
+            return
         self.thrd.start()
 
     def alert_stream(self, reset_event, kill_event):
