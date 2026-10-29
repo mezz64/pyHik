@@ -54,6 +54,9 @@ _BROKEN_ALERT_STREAM_DEVICES = [
     ('DS-KV8113-WME1(B)', 'V2.2.53', 'build 230918'),
 ]
 
+# Characters of an eventType-less alert packet written to the debug log.
+UNTYPED_PACKET_LOG_LIMIT = 1000
+
 
 @dataclass
 class Recording:
@@ -143,6 +146,10 @@ class HikCamera(object):
             CONTEXT_ALERT: None,
             CONTEXT_MOTION: None
         }
+
+        # Root tags of eventType-less packets already logged, so a device
+        # that sends them every second does not flood a debug log.
+        self._logged_untyped_tags = set()
 
         # Build requests session for main thread API calls (snapshots, etc.)
         # Default to basic authentication. It will change to digest inside
@@ -893,7 +900,7 @@ class HikCamera(object):
                             if parse_string:
                                 try:
                                     tree = ET.fromstring(parse_string)
-                                    self.process_stream(tree)
+                                    self.process_stream(tree, parse_string)
                                     self.update_stale()
                                 except ET.ParseError as err:
                                     _LOGGING.warning('XML parse error in stream.')
@@ -951,14 +958,27 @@ class HikCamera(object):
         self.watchdog.stop()
         self.hik_request_stream.close()
 
-    def process_stream(self, tree):
+    def process_stream(self, tree, raw=None):
         """Process incoming event stream packets."""
         self.fetch_namespace(tree, CONTEXT_ALERT)
 
         raw_etype = self.element_text(tree, 'eventType')
         if raw_etype is None:
             # Nothing identifies the event, so there is nothing to report.
-            _LOGGING.debug('Alert packet carries no event type, ignoring.')
+            # Log the packet itself once per root tag (namespace included):
+            # without it there is no way to tell from a user's debug log
+            # whether the type is missing, nested elsewhere, or sitting in a
+            # namespace we did not expect. The raw text keeps the namespace
+            # names that ET.tostring would rewrite, and is capped in length.
+            if (_LOGGING.isEnabledFor(logging.DEBUG)
+                    and tree.tag not in self._logged_untyped_tags):
+                self._logged_untyped_tags.add(tree.tag)
+                if raw is None:
+                    raw = ET.tostring(tree, encoding='unicode')
+                _LOGGING.debug(
+                    'Alert packet carries no event type, ignoring '
+                    '(logged once per root tag): %s',
+                    raw[:UNTYPED_PACKET_LOG_LIMIT])
             return
 
         try:
