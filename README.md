@@ -11,7 +11,7 @@ Code is licensed under the MIT license.
 
 # Requirements
 
-* Python 3.9+
+* Python 3.10+
 * [requests](https://pypi.org/project/requests/) >= 2.20.0
 
 Optional:
