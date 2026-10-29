@@ -37,8 +37,7 @@ from pyhik.watchdog import Watchdog
 from pyhik.constants import (
     DEFAULT_PORT, DEFAULT_RTSP_PORT, DEFAULT_HEADERS, XML_NAMESPACE, SENSOR_MAP,
     CAM_DEVICE, NVR_DEVICE, CONNECT_TIMEOUT, READ_TIMEOUT, SNAPSHOT_TIMEOUT,
-    RECORDING_SEARCH_TIMEOUT, DOWNLOAD_TIMEOUT, CONTEXT_INFO, CONTEXT_TRIG,
-    CONTEXT_MOTION, CONTEXT_ALERT, CHANNEL_NAMES, ID_TYPES,
+    RECORDING_SEARCH_TIMEOUT, DOWNLOAD_TIMEOUT, CHANNEL_NAMES, ID_TYPES,
     VALID_NOTIFICATION_METHODS, TRIGGERS_CAP_SUFFIX, TRIGGERS_CAP_EVENTS,
     __version__)
 
@@ -136,13 +135,6 @@ class HikCamera(object):
         self.root_url = urlunparse((
             scheme, f'{self.host}:{effective_port}', '', '', '', ''
         ))
-
-        self.namespace = {
-            CONTEXT_INFO: None,
-            CONTEXT_TRIG: None,
-            CONTEXT_ALERT: None,
-            CONTEXT_MOTION: None
-        }
 
         # Build requests session for main thread API calls (snapshots, etc.)
         # Default to basic authentication. It will change to digest inside
@@ -247,8 +239,7 @@ class HikCamera(object):
             self.motion_detection = None
             return self.motion_detection
 
-        self.fetch_namespace(tree, CONTEXT_MOTION)
-        enabled = tree.find(self.element_query('enabled', CONTEXT_MOTION))
+        enabled = tree.find(self.element_query('enabled'))
 
         if enabled is None:
             # NVRs and some cameras answer 200 with a different document.
@@ -274,7 +265,7 @@ class HikCamera(object):
         url = ('%s/ISAPI/System/Video/inputs/'
                'channels/1/motionDetection') % self.root_url
 
-        enabled = self._motion_detection_xml.find(self.element_query('enabled', CONTEXT_MOTION))
+        enabled = self._motion_detection_xml.find(self.element_query('enabled'))
         if enabled is None:
             _LOGGING.error("Couldn't find 'enabled' in the xml")
             _LOGGING.error('XML: %s', ET.tostring(self._motion_detection_xml))
@@ -469,49 +460,21 @@ class HikCamera(object):
                                callback, sensor)
                 callback(msg)
 
-    def element_query(self, element, context):
-        """Build tree query for a given element and context."""
-        if context == CONTEXT_INFO:
-            return '{%s}%s' % (self.namespace[CONTEXT_INFO], element)
-        elif context == CONTEXT_TRIG:
-            return '{%s}%s' % (self.namespace[CONTEXT_TRIG], element)
-        elif context == CONTEXT_ALERT:
-            return '{%s}%s' % (self.namespace[CONTEXT_ALERT], element)
-        elif context == CONTEXT_MOTION:
-            return '{%s}%s' % (self.namespace[CONTEXT_MOTION], element)
-        else:
-            return '{%s}%s' % (XML_NAMESPACE, element)
+    def element_query(self, element, context=None):
+        """Build tree query for an element in any namespace.
 
-    def element_text(self, tree, element, context=CONTEXT_ALERT):
+        Devices disagree on the namespace (hikvision.com, isapi.org, none at
+        all, or a mix within one document), so match on the local name only.
+        context is accepted for backward compatibility and ignored.
+        """
+        return '{*}%s' % element
+
+    def element_text(self, tree, element, context=None):
         """Text of an element, or None when the device left it out."""
-        node = tree.find(self.element_query(element, context))
+        node = tree.find(self.element_query(element))
         if node is None or node.text is None:
             return None
         return node.text.strip() or None
-
-    def fetch_namespace(self, tree, context):
-        """Determine proper namespace to find given element."""
-        if context == CONTEXT_INFO:
-            nmsp = tree.tag.split('}')[0].strip('{')
-            self.namespace[CONTEXT_INFO] = nmsp if nmsp.startswith('http') else XML_NAMESPACE
-            _LOGGING.debug('Device info namespace: %s', self.namespace[CONTEXT_INFO])
-        elif context == CONTEXT_TRIG:
-            try:
-                # For triggers we *typically* only care about the sub-namespace
-                nmsp = tree[0][1].tag.split('}')[0].strip('{')
-            except IndexError:
-                # If get a index error check on top level
-                nmsp = tree.tag.split('}')[0].strip('{')
-            self.namespace[CONTEXT_TRIG] = nmsp if nmsp.startswith('http') else XML_NAMESPACE
-            _LOGGING.debug('Device triggers namespace: %s', self.namespace[CONTEXT_TRIG])
-        elif context == CONTEXT_ALERT:
-            nmsp = tree.tag.split('}')[0].strip('{')
-            self.namespace[CONTEXT_ALERT] = nmsp if nmsp.startswith('http') else XML_NAMESPACE
-            _LOGGING.debug('Device alerts namespace: %s', self.namespace[CONTEXT_ALERT])
-        elif context == CONTEXT_MOTION:
-            nmsp = tree.tag.split('}')[0].strip('{')
-            self.namespace[CONTEXT_MOTION] = nmsp if nmsp.startswith('http') else XML_NAMESPACE
-            _LOGGING.debug('Device motion namespace: %s', self.namespace[CONTEXT_MOTION])
 
     def initialize(self):
         """Initialize deviceInfo and available events."""
@@ -621,10 +584,9 @@ class HikCamera(object):
 
         try:
             tree = ET.fromstring(response.text)
-            self.fetch_namespace(tree, CONTEXT_INFO)
  
             for item in tree:
-                tag = item.tag.split('}')[1]
+                tag = item.tag.rpartition('}')[2]
                 device_info[tag] = item.text
 
             return device_info
@@ -696,31 +658,30 @@ class HikCamera(object):
         # pylint: disable=too-many-nested-blocks
         try:
             content = ET.fromstring(response.text)
-            self.fetch_namespace(content, CONTEXT_TRIG)
 
             if len(content) and content[0].find(
-                    self.element_query('EventTrigger', CONTEXT_TRIG)) is not None:
+                    self.element_query('EventTrigger')) is not None:
                 event_xml = content[0].findall(
-                    self.element_query('EventTrigger', CONTEXT_TRIG))
-            elif content.find(self.element_query('EventTrigger', CONTEXT_TRIG)) is not None:
+                    self.element_query('EventTrigger'))
+            elif content.find(self.element_query('EventTrigger')) is not None:
                 # This is either an NVR or a rebadged camera
                 event_xml = content.findall(
-                    self.element_query('EventTrigger', CONTEXT_TRIG))
+                    self.element_query('EventTrigger'))
 
             for eventtrigger in event_xml:
-                ettype = eventtrigger.find(self.element_query('eventType', CONTEXT_TRIG))
+                ettype = eventtrigger.find(self.element_query('eventType'))
                 # Catch empty xml defintions
                 if ettype is None:
                     break
                 etnotify = eventtrigger.find(
-                    self.element_query('EventTriggerNotificationList', CONTEXT_TRIG))
+                    self.element_query('EventTriggerNotificationList'))
 
                 etchannel = None
                 etchannel_num = 0
 
                 for node_name in CHANNEL_NAMES:
                     etchannel = eventtrigger.find(
-                        self.element_query(node_name, CONTEXT_TRIG))
+                        self.element_query(node_name))
                     if etchannel is not None:
                         try:
                             # Need to make sure this is actually a number
@@ -736,7 +697,7 @@ class HikCamera(object):
                 if etnotify is not None:
                     for notifytrigger in etnotify:
                         ntype = notifytrigger.find(
-                            self.element_query('notificationMethod', CONTEXT_TRIG))
+                            self.element_query('notificationMethod'))
                         if ntype is not None and ntype.text and \
                                 ntype.text.lower() in notification_methods_lower:
                             # Found an event with a valid notification method
@@ -953,8 +914,6 @@ class HikCamera(object):
 
     def process_stream(self, tree):
         """Process incoming event stream packets."""
-        self.fetch_namespace(tree, CONTEXT_ALERT)
-
         raw_etype = self.element_text(tree, 'eventType')
         if raw_etype is None:
             # Nothing identifies the event, so there is nothing to report.
@@ -1000,10 +959,10 @@ class HikCamera(object):
         # Optional smart-event detection target (human, vehicle, ...). It can
         # appear at the top level or nested in a detection region entry.
         etarget = tree.find(
-            './/%s' % self.element_query('targetType', CONTEXT_ALERT))
+            './/%s' % self.element_query('targetType'))
         if etarget is None:
             etarget = tree.find(
-                './/%s' % self.element_query('detectionTarget', CONTEXT_ALERT))
+                './/%s' % self.element_query('detectionTarget'))
         target_type = etarget.text if etarget is not None else None
 
         # Take care of keep-alive
@@ -1565,11 +1524,8 @@ def get_video_channels(host, port, username, password, ssl=False):
         session.close()
         return channels
 
-    # Handle namespace
-    namespace = ""
-    root_tag = tree.tag
-    if root_tag.startswith("{"):
-        namespace = root_tag.split("}")[0] + "}"
+    # Match elements in any namespace; devices disagree on which they use
+    namespace = "{*}"
 
     # Try to find VideoInputChannel elements
     channel_elements = tree.findall(".//{}VideoInputChannel".format(namespace))
