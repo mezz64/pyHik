@@ -8,10 +8,10 @@ Copyright (c) 2016-2026 John Mihalic <https://github.com/mezz64>
 Licensed under the MIT license.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import logging
-from typing import Any, Dict, List, Mapping, Optional, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 import xml.etree.ElementTree as ET
 from urllib.parse import quote, urlparse, urlunparse
 
@@ -21,8 +21,13 @@ from requests.structures import CaseInsensitiveDict
 
 from pyhik.image import (
     ImageSetting,
+    ImageWriteResult,
+    apply_enable_and_mode,
+    apply_image_changes,
+    conflict_resolution,
     parse_image_capabilities,
     parse_image_values,
+    parse_response_status,
 )
 
 try:
@@ -62,6 +67,9 @@ EVENT_ENDPOINTS: Dict[str, str] = {
 
 # Request timeout
 REQUEST_TIMEOUT = 20
+
+# How many times a write is retried after switching off a conflicting setting.
+IMAGE_CONFLICT_RETRIES = 2
 
 
 class HTTPMethod(Enum):
@@ -241,6 +249,28 @@ class RawResponse:
     def text(self) -> str:
         """Return the body decoded as UTF-8 (undecodable bytes replaced)."""
         return self.content.decode("utf-8", errors="replace")
+
+
+def _single_feature(
+    changes: Dict[str, str]
+) -> Optional[Tuple[str, Dict[str, str]]]:
+    """Split changes that all belong to one top-level element.
+
+    Returns ``(feature, {path inside the feature: value})``, for example
+    ``("BLC", {"enabled": "false", "BLCMode": "CLOSE"})``, or None if the
+    changes span several features or include a top-level element.
+    """
+    features = set()
+    sub_changes: Dict[str, str] = {}
+    for path, value in changes.items():
+        top, _, rest = path.partition("/")
+        if not top or not rest:
+            return None
+        features.add(top)
+        sub_changes[rest] = value
+    if len(features) != 1:
+        return None
+    return features.pop(), sub_changes
 
 
 class ISAPIClient:
@@ -1082,6 +1112,226 @@ class ISAPIClient:
         if isinstance(result, bytes):
             return {"raw_bytes": True, "length": len(result)}
         return result
+
+    # ------------------------------------------------------------------
+    # Image settings: writing
+    # ------------------------------------------------------------------
+
+    def _put_image_xml(self, endpoint: str, xml: str) -> ImageWriteResult:
+        response = self.request_raw("PUT", endpoint, body=xml)
+        return parse_response_status(response.content, response.status_code)
+
+    def _read_image_xml(self, endpoint: str) -> str:
+        try:
+            return self._get_raw_ok(endpoint).decode("utf-8")
+        except UnicodeDecodeError as err:
+            raise ISAPIError(f"Invalid image settings XML: {err}") from err
+
+    def put_image_settings(
+        self, changes: Dict[str, str], channel: int = 1
+    ) -> ImageWriteResult:
+        """Write one or more image settings in a single PUT.
+
+        Reads the full ImageChannel document, changes only the given
+        ``{path: value}`` entries as text, and sends it back, so everything
+        else is preserved byte for byte. Paths absent from the document are
+        skipped (a mode element is normally absent while its feature is
+        off); if none of them is present nothing is sent and the result is
+        ``pathNotFound``.
+
+        Some devices reject every write to the full document with
+        ``notSupport`` but accept writes to a sub-endpoint such as
+        ``/ISAPI/Image/channels/1/Shutter``. When every change belongs to the
+        same feature (for example ``BLC/enabled`` and ``BLC/BLCMode``), the
+        write is retried there automatically.
+
+        This does not resolve conflicts between settings; see
+        :meth:`set_image_setting`.
+
+        Raises:
+            ISAPIConnectionError: Connection failed.
+            ISAPIAuthError: Authentication failed or not permitted (read).
+            ISAPIError: The document could not be read or parsed.
+        """
+        endpoint = ENDPOINT_IMAGE_CHANNEL.format(channel=channel)
+        original = self._read_image_xml(endpoint)
+        try:
+            edited, missing = apply_image_changes(original, changes)
+        except ET.ParseError as err:
+            raise ISAPIError(f"Invalid image settings XML: {err}") from err
+        for path in missing:
+            _LOGGER.debug("Image setting %s not found in %s", path, endpoint)
+        if len(missing) == len(changes):
+            return ImageWriteResult(False, 0, "pathNotFound")
+
+        result = self._put_image_xml(endpoint, edited)
+        if not result.success and result.sub_status == "notSupport":
+            feature = _single_feature(changes)
+            if feature is not None:
+                top, sub_changes = feature
+                _LOGGER.debug(
+                    "%s: notSupport, retrying via sub-endpoint /%s",
+                    ", ".join(changes), top,
+                )
+                return self._put_image_sub_endpoint(channel, top, sub_changes)
+        return result
+
+    def _put_image_sub_endpoint(
+        self, channel: int, top: str, changes: Dict[str, str]
+    ) -> ImageWriteResult:
+        sub = f"{ENDPOINT_IMAGE_CHANNEL.format(channel=channel)}/{top}"
+        response = self.request_raw("GET", sub)
+        if not response.ok:
+            return ImageWriteResult(False, response.status_code, "subEndpointGetFailed")
+        try:
+            edited, missing = apply_image_changes(response.text, changes)
+        except ET.ParseError:
+            return ImageWriteResult(False, response.status_code, "invalidResponse")
+        if len(missing) == len(changes):
+            return ImageWriteResult(False, 0, "pathNotFoundInSubEndpoint")
+        return self._put_image_xml(sub, edited)
+
+    def put_image_setting_with_enable(
+        self,
+        enabled_path: str,
+        mode_path: str,
+        mode_value: str,
+        channel: int = 1,
+    ) -> ImageWriteResult:
+        """Switch a feature on and set its mode in one PUT.
+
+        For features such as BLC whose mode element (``BLC/BLCMode``) is
+        absent while ``BLC/enabled`` is false; the element is inserted after
+        the flag. Falls back to the top-level sub-endpoint on ``notSupport``
+        when both paths share a top-level element.
+        """
+        endpoint = ENDPOINT_IMAGE_CHANNEL.format(channel=channel)
+        original = self._read_image_xml(endpoint)
+        try:
+            edited = apply_enable_and_mode(original, enabled_path, mode_path, mode_value)
+        except ET.ParseError as err:
+            raise ISAPIError(f"Invalid image settings XML: {err}") from err
+        if edited is None:
+            return ImageWriteResult(False, 0, "pathNotFound")
+
+        result = self._put_image_xml(endpoint, edited)
+        top, _, enabled_leaf = enabled_path.partition("/")
+        mode_top, _, mode_leaf = mode_path.partition("/")
+        if not (
+            not result.success
+            and result.sub_status == "notSupport"
+            and enabled_leaf
+            and top == mode_top
+        ):
+            return result
+
+        sub = f"{endpoint}/{top}"
+        response = self.request_raw("GET", sub)
+        if not response.ok:
+            return ImageWriteResult(False, response.status_code, "subEndpointGetFailed")
+        try:
+            edited = apply_enable_and_mode(
+                response.text, enabled_leaf, mode_leaf, mode_value
+            )
+        except ET.ParseError:
+            return ImageWriteResult(False, response.status_code, "invalidResponse")
+        if edited is None:
+            return ImageWriteResult(False, 0, "pathNotFoundInSubEndpoint")
+        return self._put_image_xml(sub, edited)
+
+    def _with_image_conflict_resolution(
+        self,
+        attempt: Callable[[], ImageWriteResult],
+        path: str,
+        channel: int,
+    ) -> ImageWriteResult:
+        result = attempt()
+        also_changed: Dict[str, str] = {}
+
+        def finish(final: ImageWriteResult) -> ImageWriteResult:
+            return replace(final, also_changed=dict(also_changed)) if also_changed else final
+
+        for _ in range(IMAGE_CONFLICT_RETRIES):
+            if result.success:
+                return finish(result)
+            resolution = conflict_resolution(result.sub_status, path)
+            if resolution is None:
+                _LOGGER.warning(
+                    "Setting %s failed: %s", path, result.error_description
+                )
+                return finish(result)
+            _LOGGER.info(
+                "Conflict (%s) setting %s: switching off %s first",
+                result.sub_status, path, resolution,
+            )
+            # The device checks conflicts against its current state, so the
+            # blockers must be switched off in their own PUT before retrying.
+            # Blockers that are absent or already off are left out of it, and
+            # the document's own spelling of each path is used.
+            current = {
+                key.lower(): (key, value)
+                for key, value in parse_image_values(
+                    self._read_image_xml(ENDPOINT_IMAGE_CHANNEL.format(channel=channel))
+                ).items()
+            }
+            blockers: Dict[str, str] = {}
+            for blocker, value in resolution.items():
+                found = current.get(blocker.lower())
+                if found is not None and found[1].lower() != value.lower():
+                    blockers[found[0]] = value
+            if not blockers:
+                # Nothing left to switch off, so retrying would fail the same way.
+                _LOGGER.warning("Setting %s failed: %s", path, result.error_description)
+                return finish(result)
+            prerequisite = self.put_image_settings(blockers, channel)
+            if not prerequisite.success:
+                return finish(prerequisite)
+            also_changed.update(blockers)
+            result = attempt()
+        if not result.success:
+            _LOGGER.warning("Setting %s failed: %s", path, result.error_description)
+        return finish(result)
+
+    def set_image_setting(
+        self, path: str, value: str, channel: int = 1
+    ) -> ImageWriteResult:
+        """Set one image setting, resolving known conflicts automatically.
+
+        If the device rejects the change because another setting is in the
+        way (e.g. enabling WDR while BLC or HLC is on), the blocker is
+        switched off first and the change is retried. Check
+        ``result.success``; connection and read errors raise as in
+        :meth:`put_image_settings`.
+        """
+        return self._with_image_conflict_resolution(
+            lambda: self.put_image_settings({path: value}, channel), path, channel
+        )
+
+    def set_image_linked_setting(
+        self, setting: ImageSetting, value: str, channel: int = 1
+    ) -> ImageWriteResult:
+        """Set a select that also controls an ``enabled`` flag (e.g. BLC mode).
+
+        ``setting`` is an :class:`ImageSetting` from :meth:`get_image_settings`.
+        Choosing its ``off_value`` disables the feature; any other option
+        enables it with that mode, resolving conflicts as in
+        :meth:`set_image_setting`. A setting that is not linked is written
+        like :meth:`set_image_setting`.
+        """
+        enabled_path = setting.linked_enabled_path
+        if enabled_path is None:
+            return self.set_image_setting(setting.path, value, channel)
+        if value == setting.off_value:
+            return self.put_image_settings(
+                {enabled_path: "false", setting.path: value}, channel
+            )
+        return self._with_image_conflict_resolution(
+            lambda: self.put_image_setting_with_enable(
+                enabled_path, setting.path, value, channel
+            ),
+            setting.path,
+            channel,
+        )
 
     def close(self) -> None:
         """Close the client session."""
