@@ -358,7 +358,7 @@ def conflict_resolution(sub_status: str, path: str) -> Optional[Dict[str, str]]:
 # ResponseStatus statusCode values that mean the change was applied: 1 is OK,
 # 7 is "Reboot Required" (applied, takes effect after a reboot).
 #
-# Hikvisio says changing "power line frequency" needs a # reboot to take effect.
+# Hikvisio says changing "power line frequency" needs a reboot to take effect.
 # In current firmware, this might be the only image change that needs a reboot.
 _APPLIED_STATUS_CODES = frozenset({"1", "7"})
 
