@@ -295,8 +295,10 @@ class HikCamera(object):
             return
 
         if response.status_code != requests.codes.ok:
-            # If we didn't receive 200, abort
-            _LOGGING.error('Unable to set motion detection: %s', response.text)
+            # If we didn't receive 200, the camera did not change.
+            _LOGGING.error('Unable to set motion detection: %s -> %s',
+                           response.status_code, response.text)
+            return
 
         self.motion_detection = enable
 

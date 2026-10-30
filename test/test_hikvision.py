@@ -91,6 +91,57 @@ class HikvisionTestCase(unittest.TestCase):
         self.assertFalse(device.current_motion_detection_state)
 
 
+@patch("pyhik.hikvision.requests.Session")
+class MotionDetectionWriteFailureTestCase(unittest.TestCase):
+    """A write the camera does not accept must not change the reported state."""
+
+    def camera(self, mock_session_cls, enabled):
+        session = mock_session_cls.return_value
+        session.get.return_value = MagicMock(
+            status_code=requests.codes.ok, text=XML.format(enabled)
+        )
+        with patch("pyhik.hikvision.HikCamera.get_device_info"), patch(
+            "pyhik.hikvision.HikCamera.get_event_triggers"
+        ):
+            return HikCamera(host="localhost"), session
+
+    def test_rejected_write_keeps_the_state(self, mock_session_cls):
+        for status in (400, 403, 404, 500, 503):
+            for enable, before in ((True, False), (False, True)):
+                with self.subTest(status=status, enable=enable):
+                    camera, session = self.camera(
+                        mock_session_cls, "true" if before else "false"
+                    )
+                    session.put.return_value = MagicMock(
+                        status_code=status, text="<ResponseStatus/>"
+                    )
+                    with self.assertLogs("pyhik.hikvision", "ERROR") as logs:
+                        if enable:
+                            camera.enable_motion_detection()
+                        else:
+                            camera.disable_motion_detection()
+                    self.assertEqual(camera.current_motion_detection_state, before)
+                    self.assertIn(str(status), logs.output[0])
+
+    def test_unauthorized_write_keeps_the_state(self, mock_session_cls):
+        camera, session = self.camera(mock_session_cls, "false")
+        session.put.return_value = MagicMock(status_code=requests.codes.unauthorized)
+        camera.enable_motion_detection()
+        self.assertFalse(camera.current_motion_detection_state)
+
+    def test_unreachable_camera_keeps_the_state(self, mock_session_cls):
+        camera, session = self.camera(mock_session_cls, "false")
+        session.put.side_effect = requests.exceptions.ConnectionError("down")
+        camera.enable_motion_detection()
+        self.assertFalse(camera.current_motion_detection_state)
+
+    def test_accepted_write_changes_the_state(self, mock_session_cls):
+        camera, session = self.camera(mock_session_cls, "false")
+        session.put.return_value = MagicMock(status_code=requests.codes.ok)
+        camera.enable_motion_detection()
+        self.assertTrue(camera.current_motion_detection_state)
+
+
 # XML for testing get_event_triggers with various notification methods
 EVENT_TRIGGERS_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <EventTriggerList xmlns="http://www.hikvision.com/ver20/XMLSchema" version="2.0">
