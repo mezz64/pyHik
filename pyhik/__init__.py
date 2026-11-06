@@ -29,6 +29,7 @@ from pyhik.isapi import (
 from pyhik.image import (
     ImageSetting,
     ImageSettingType,
+    ImageWriteResult,
     parse_image_capabilities,
     parse_image_values,
 )
@@ -63,6 +64,7 @@ __all__ = [
     # Image settings
     'ImageSetting',
     'ImageSettingType',
+    'ImageWriteResult',
     'parse_image_capabilities',
     'parse_image_values',
 ]

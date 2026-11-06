@@ -101,6 +101,9 @@ with ISAPIClient('X.X.X.X', port=80, username='admin', password='1234') as clien
 * `request_raw(method, endpoint, body=None)` - like `custom_request` but sends the body unmodified and returns the unparsed response (`RawResponse`: status code, bytes, case-insensitive headers) without raising on HTTP error statuses (after a 401 the request is retried once with Digest auth)
 * `get_image_settings(channel=1)` - list the image settings a camera supports (shutter, gain, WDR, BLC, day/night, ...) with their current values (`ImageSetting` objects, see `pyhik.image`)
 * `get_image_values(channel=1)` - read only the current values as `{path: value}`; cheap enough to poll
+* `set_image_setting(path, value, channel=1)` - change one image setting; known conflicts between settings are resolved automatically
+* `set_image_linked_setting(setting, value, channel=1)` - set a select that also controls an `enabled` flag, such as BLC mode
+* `put_image_settings(changes, channel=1)` - lower level: write several `{path: value}` changes in one request, without conflict handling
 
 ### Image settings
 
@@ -114,6 +117,15 @@ settings["Shutter/ShutterLevel"].options   # ['1/3', '1/6', ..., '1/100000']
 ```
 
 Reading raises `ISAPINotSupportedError` (a subclass of `ISAPINotFoundError`) if the device does not offer the endpoint (404, 501 or a `notSupport` reply), `ISAPIAuthError` for credential or permission problems and `ISAPIConnectionError` if the device cannot be reached. These exceptions carry `status_code` and `sub_status`, the HTTP status and the device's `subStatusCode`.
+
+Changing a setting:
+
+```python
+result = client.set_image_setting("Shutter/ShutterLevel", "1/500")
+result.success, result.sub_status          # True, 'ok'
+```
+
+A write reads the full document, changes only the target value as text and sends it back, which the devices require. Some settings conflict (enabling WDR while BLC or HLC is on, and the reverse); the setting in the way is switched off first. Firmware that reports the HLC conflict as `HLCMutexWDROrDehaze` or `WDROrDehazeMutexHLC` (HTTP 403) is handled the same way: HLC is switched off when WDR or defog is turned on, and WDR and defog are switched off when HLC is turned on. The settings that were switched off to make room are listed in `ImageWriteResult.also_changed` (for example `{"HLC/enabled": "false"}`). If a conflict cannot be resolved, `ImageWriteResult.error_description` explains it. Cameras that reject writes to the full document with `notSupport` but accept a per-feature sub-endpoint (for example `/ISAPI/Image/channels/1/Shutter`) are handled automatically when all the changes belong to the same feature (for example `BLC/enabled` and `BLC/BLCMode`). Writes are not atomic, so avoid overlapping writes to the same device.
 
 # TODO
 
