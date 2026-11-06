@@ -99,11 +99,12 @@ with ISAPIClient('X.X.X.X', port=80, username='admin', password='1234') as clien
 * `reboot()` - reboot the device
 * `custom_request(...)` - issue an arbitrary ISAPI request for endpoints not otherwise wrapped
 * `request_raw(method, endpoint, body=None)` - like `custom_request` but sends the body unmodified and returns the unparsed response (`RawResponse`: status code, bytes, case-insensitive headers) without raising on HTTP error statuses (after a 401 the request is retried once with Digest auth)
-* `get_image_settings(channel=1)` - list the image settings a camera supports (shutter, gain, WDR, BLC, day/night, ...) with their current values (`ImageSetting` objects, see `pyhik.image`)
-* `get_image_values(channel=1)` - read only the current values as `{path: value}`; cheap enough to poll
-* `set_image_setting(path, value, channel=1)` - change one image setting; known conflicts between settings are resolved automatically
-* `set_image_linked_setting(setting, value, channel=1)` - set a select that also controls an `enabled` flag, such as BLC mode
-* `put_image_settings(changes, channel=1)` - lower level: write several `{path: value}` changes in one request, without conflict handling
+* `get_image_settings(channel=1, proxy=False)` - list the image settings a camera supports (shutter, gain, WDR, BLC, day/night, ...) with their current values (`ImageSetting` objects, see `pyhik.image`)
+* `get_image_values(channel=1, proxy=False)` - read only the current values as `{path: value}`; cheap enough to poll
+* `set_image_setting(path, value, channel=1, proxy=False)` - change one image setting; known conflicts between settings are resolved automatically
+* `set_image_linked_setting(setting, value, channel=1, proxy=False)` - set a select that also controls an `enabled` flag, such as BLC mode
+* `put_image_settings(changes, channel=1, proxy=False)` - lower level: write several `{path: value}` changes in one request, without conflict handling
+* `get_image_channels(proxy=False)` - list the channel IDs that have image settings (`ImageChannelInfo`)
 
 ### Image settings
 
@@ -126,6 +127,15 @@ result.success, result.sub_status          # True, 'ok'
 ```
 
 A write reads the full document, changes only the target value as text and sends it back, which the devices require. Some settings conflict (enabling WDR while BLC or HLC is on, and the reverse); the setting in the way is switched off first. Firmware that reports the HLC conflict as `HLCMutexWDROrDehaze` or `WDROrDehazeMutexHLC` (HTTP 403) is handled the same way: HLC is switched off when WDR or defog is turned on, and WDR and defog are switched off when HLC is turned on. The settings that were switched off to make room are listed in `ImageWriteResult.also_changed` (for example `{"HLC/enabled": "false"}`). If a conflict cannot be resolved, `ImageWriteResult.error_description` explains it. Cameras that reject writes to the full document with `notSupport` but accept a per-feature sub-endpoint (for example `/ISAPI/Image/channels/1/Shutter`) are handled automatically when all the changes belong to the same feature (for example `BLC/enabled` and `BLC/BLCMode`). Writes are not atomic, so avoid overlapping writes to the same device.
+
+For the cameras attached to an NVR, pass `proxy=True` (`/ISAPI/ContentMgmt/ImageProxy/channels/<id>`) and use the IDs returned by `get_image_channels(proxy=True)`:
+
+```python
+for channel in client.get_image_channels(proxy=True):
+    settings = client.get_image_settings(channel.id, proxy=True)
+```
+
+The sub-endpoint fallback is not used through the NVR. An NVR may list a channel whose camera it cannot proxy; reading it raises `ISAPINotSupportedError`.
 
 # TODO
 
