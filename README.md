@@ -137,6 +137,14 @@ for channel in client.get_image_channels(proxy=True):
 
 The sub-endpoint fallback is not used through the NVR. An NVR may list a channel whose camera it cannot proxy; reading it raises `ISAPINotSupportedError`.
 
+Recorders do not always report what they are; be ready to fall back to the NVR endpoints:
+
+* A recorder may report `deviceType` `IPC`, the type a camera reports; the type alone cannot tell an NVR from a camera.
+* If the direct listing fails, try `get_image_channels(proxy=True)`.
+* An NVR may reject the camera endpoints (`/ISAPI/Image/channels`) with HTTP 503 `serviceUnavailable` or 400 `badXmlContent`. pyhik raises a plain `ISAPIError` for these; catching only `ISAPINotSupportedError` will not catch them.
+* `ISAPINotSupportedError` only means that the device says it does not offer the endpoint: HTTP 404, 501 or a `notSupport` reply.
+* For any other error, check `status_code` and `sub_status` on the exception.
+
 # TODO
 
 * Support IR day/night status and ability to switch between day/night/auto
