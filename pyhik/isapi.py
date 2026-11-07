@@ -20,12 +20,14 @@ from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 from requests.structures import CaseInsensitiveDict
 
 from pyhik.image import (
+    ImageChannelInfo,
     ImageSetting,
     ImageWriteResult,
     apply_enable_and_mode,
     apply_image_changes,
     conflict_resolution,
     parse_image_capabilities,
+    parse_image_channels,
     parse_image_values,
     parse_response_status,
 )
@@ -51,6 +53,10 @@ ENDPOINT_REBOOT = "/ISAPI/System/reboot"
 ENDPOINT_EVENT_TRIGGERS = "/ISAPI/Event/triggers"
 ENDPOINT_SMART_CAPABILITIES = "/ISAPI/Smart/capabilities"
 ENDPOINT_IMAGE_CHANNEL = "/ISAPI/Image/channels/{channel}"
+ENDPOINT_IMAGE_CHANNELS = "/ISAPI/Image/channels"
+# Image settings of the cameras attached to an NVR are reached through the NVR.
+ENDPOINT_IMAGE_PROXY_CHANNEL = "/ISAPI/ContentMgmt/ImageProxy/channels/{channel}"
+ENDPOINT_IMAGE_PROXY_CHANNELS = "/ISAPI/ContentMgmt/ImageProxy/channels"
 
 # Event detection endpoints
 EVENT_ENDPOINTS: Dict[str, str] = {
@@ -1051,13 +1057,48 @@ class ISAPIClient:
             raise ISAPIAuthError("Insufficient permissions", status, sub_status)
         raise ISAPIError(f"Request failed with status {status}", status, sub_status)
 
-    def get_image_settings(self, channel: int = 1) -> List[ImageSetting]:
-        """Discover the image settings a channel supports, with current values.
+    @staticmethod
+    def _image_endpoint(channel: Union[int, str], proxy: bool) -> str:
+        template = ENDPOINT_IMAGE_PROXY_CHANNEL if proxy else ENDPOINT_IMAGE_CHANNEL
+        # The ID is one path segment, whatever the caller passes.
+        return template.format(channel=quote(str(channel), safe=""))
+
+    def get_image_channels(self, proxy: bool = False) -> List[ImageChannelInfo]:
+        """List the channel IDs with image settings.
+
+        Use the returned IDs as the ``channel`` argument of the other image
+        methods.
+
+        Args:
+            proxy: False for a camera (``/ISAPI/Image/channels``); True for an
+                NVR, listing its attached cameras
+                (``/ISAPI/ContentMgmt/ImageProxy/channels``).
+
+        Raises:
+            ISAPIConnectionError: Connection failed.
+            ISAPIAuthError: 401, or not permitted.
+            ISAPINotFoundError: The device does not offer the endpoint.
+            ISAPIError: Other request errors, or an unparsable response.
+        """
+        endpoint = ENDPOINT_IMAGE_PROXY_CHANNELS if proxy else ENDPOINT_IMAGE_CHANNELS
+        content = self._get_raw_ok(endpoint)
+        try:
+            return parse_image_channels(content)
+        except ET.ParseError as err:
+            raise ISAPIError(f"Invalid image channel list XML: {err}") from err
+
+    def get_image_settings(
+        self, channel: Union[int, str] = 1, proxy: bool = False
+    ) -> List[ImageSetting]:
+        """Discover the image settings a channel supports with their current
+        values.
 
         Reads ``/ISAPI/Image/channels/<channel>/capabilities`` and
-        ``/ISAPI/Image/channels/<channel>``. If the device has no current
-        values endpoint (404), the defaults in the capabilities document are
-        used instead. See :mod:`pyhik.image`.
+        ``/ISAPI/Image/channels/<channel>``; with ``proxy=True`` (an NVR and
+        one of its attached cameras) the same documents under
+        ``/ISAPI/ContentMgmt/ImageProxy/channels/<channel>``. If the device
+        has no current values endpoint (404), the defaults in the
+        capabilities document are used instead. See :mod:`pyhik.image`.
 
         Raises:
             ISAPIConnectionError: Connection failed.
@@ -1065,7 +1106,7 @@ class ISAPIClient:
             ISAPINotFoundError: The device has no image capabilities endpoint.
             ISAPIError: Other request errors, or an unparsable response.
         """
-        endpoint = ENDPOINT_IMAGE_CHANNEL.format(channel=channel)
+        endpoint = self._image_endpoint(channel, proxy)
         capabilities = self._get_raw_ok(f"{endpoint}/capabilities")
         try:
             values: Optional[bytes] = self._get_raw_ok(endpoint)
@@ -1076,7 +1117,9 @@ class ISAPIClient:
         except ET.ParseError as err:
             raise ISAPIError(f"Invalid image settings XML: {err}") from err
 
-    def get_image_values(self, channel: int = 1) -> Dict[str, str]:
+    def get_image_values(
+        self, channel: Union[int, str] = 1, proxy: bool = False
+    ) -> Dict[str, str]:
         """Read the current image setting values as ``{path: value}``.
 
         Cheaper than :meth:`get_image_settings` for periodic polling: one
@@ -1088,7 +1131,7 @@ class ISAPIClient:
             ISAPINotFoundError: The device has no image settings endpoint.
             ISAPIError: Other request errors, or an unparsable response.
         """
-        content = self._get_raw_ok(ENDPOINT_IMAGE_CHANNEL.format(channel=channel))
+        content = self._get_raw_ok(self._image_endpoint(channel, proxy))
         try:
             return parse_image_values(content)
         except ET.ParseError as err:
@@ -1141,7 +1184,10 @@ class ISAPIClient:
             raise ISAPIError(f"Invalid image settings XML: {err}") from err
 
     def put_image_settings(
-        self, changes: Dict[str, str], channel: int = 1
+        self,
+        changes: Dict[str, str],
+        channel: Union[int, str] = 1,
+        proxy: bool = False,
     ) -> ImageWriteResult:
         """Write one or more image settings in a single PUT.
 
@@ -1158,6 +1204,10 @@ class ISAPIClient:
         same feature (for example ``BLC/enabled`` and ``BLC/BLCMode``), the
         write is retried there automatically.
 
+        With ``proxy=True`` the document of an NVR's attached camera is
+        read and written through ``/ISAPI/ContentMgmt/ImageProxy/channels``;
+        there is no sub-endpoint fallback in that case.
+
         This does not resolve conflicts between settings; see
         :meth:`set_image_setting`.
 
@@ -1169,7 +1219,7 @@ class ISAPIClient:
                 because devices also use 403 for conflicts and ``notSupport``.
             ISAPIError: The document could not be read or parsed.
         """
-        endpoint = ENDPOINT_IMAGE_CHANNEL.format(channel=channel)
+        endpoint = self._image_endpoint(channel, proxy)
         original = self._read_image_xml(endpoint)
         try:
             edited, missing = apply_image_changes(original, changes)
@@ -1181,7 +1231,11 @@ class ISAPIClient:
             return ImageWriteResult(False, 0, "pathNotFound")
 
         result = self._put_image_xml(endpoint, edited)
-        if not result.success and result.sub_status == "notSupport":
+        if (
+            not proxy  # no sub-endpoints are documented for the NVR proxy
+            and not result.success
+            and result.sub_status == "notSupport"
+        ):
             feature = _single_feature(changes)
             if feature is not None:
                 top, sub_changes = feature
@@ -1193,9 +1247,9 @@ class ISAPIClient:
         return result
 
     def _put_image_sub_endpoint(
-        self, channel: int, top: str, changes: Dict[str, str]
+        self, channel: Union[int, str], top: str, changes: Dict[str, str]
     ) -> ImageWriteResult:
-        sub = f"{ENDPOINT_IMAGE_CHANNEL.format(channel=channel)}/{top}"
+        sub = f"{self._image_endpoint(channel, False)}/{top}"
         response = self.request_raw("GET", sub)
         self._raise_if_unauthorized(response)
         if not response.ok:
@@ -1213,7 +1267,8 @@ class ISAPIClient:
         enabled_path: str,
         mode_path: str,
         mode_value: str,
-        channel: int = 1,
+        channel: Union[int, str] = 1,
+        proxy: bool = False,
     ) -> ImageWriteResult:
         """Switch a feature on and set its mode in one PUT.
 
@@ -1222,7 +1277,7 @@ class ISAPIClient:
         the flag. Falls back to the top-level sub-endpoint on ``notSupport``
         when both paths share a top-level element.
         """
-        endpoint = ENDPOINT_IMAGE_CHANNEL.format(channel=channel)
+        endpoint = self._image_endpoint(channel, proxy)
         original = self._read_image_xml(endpoint)
         try:
             edited = apply_enable_and_mode(original, enabled_path, mode_path, mode_value)
@@ -1234,7 +1289,7 @@ class ISAPIClient:
         result = self._put_image_xml(endpoint, edited)
         top, _, enabled_leaf = enabled_path.partition("/")
         mode_top, _, mode_leaf = mode_path.partition("/")
-        if not (
+        if proxy or not (
             not result.success
             and result.sub_status == "notSupport"
             and enabled_leaf
@@ -1261,7 +1316,8 @@ class ISAPIClient:
         self,
         attempt: Callable[[], ImageWriteResult],
         path: str,
-        channel: int,
+        channel: Union[int, str],
+        proxy: bool,
     ) -> ImageWriteResult:
         result = attempt()
         also_changed: Dict[str, str] = {}
@@ -1289,7 +1345,7 @@ class ISAPIClient:
             current = {
                 key.lower(): (key, value)
                 for key, value in parse_image_values(
-                    self._read_image_xml(ENDPOINT_IMAGE_CHANNEL.format(channel=channel))
+                    self._read_image_xml(self._image_endpoint(channel, proxy))
                 ).items()
             }
             blockers: Dict[str, str] = {}
@@ -1301,7 +1357,7 @@ class ISAPIClient:
                 # Nothing left to switch off, so retrying would fail the same way.
                 _LOGGER.warning("Setting %s failed: %s", path, result.error_description)
                 return finish(result)
-            prerequisite = self.put_image_settings(blockers, channel)
+            prerequisite = self.put_image_settings(blockers, channel, proxy)
             if not prerequisite.success:
                 return finish(prerequisite)
             also_changed.update(blockers)
@@ -1311,7 +1367,11 @@ class ISAPIClient:
         return finish(result)
 
     def set_image_setting(
-        self, path: str, value: str, channel: int = 1
+        self,
+        path: str,
+        value: str,
+        channel: Union[int, str] = 1,
+        proxy: bool = False,
     ) -> ImageWriteResult:
         """Set one image setting, resolving known conflicts automatically.
 
@@ -1322,11 +1382,18 @@ class ISAPIClient:
         errors raise as in :meth:`put_image_settings`.
         """
         return self._with_image_conflict_resolution(
-            lambda: self.put_image_settings({path: value}, channel), path, channel
+            lambda: self.put_image_settings({path: value}, channel, proxy),
+            path,
+            channel,
+            proxy,
         )
 
     def set_image_linked_setting(
-        self, setting: ImageSetting, value: str, channel: int = 1
+        self,
+        setting: ImageSetting,
+        value: str,
+        channel: Union[int, str] = 1,
+        proxy: bool = False,
     ) -> ImageWriteResult:
         """Set a select that also controls an ``enabled`` flag (e.g. BLC mode).
 
@@ -1338,17 +1405,18 @@ class ISAPIClient:
         """
         enabled_path = setting.linked_enabled_path
         if enabled_path is None:
-            return self.set_image_setting(setting.path, value, channel)
+            return self.set_image_setting(setting.path, value, channel, proxy)
         if value == setting.off_value:
             return self.put_image_settings(
-                {enabled_path: "false", setting.path: value}, channel
+                {enabled_path: "false", setting.path: value}, channel, proxy
             )
         return self._with_image_conflict_resolution(
             lambda: self.put_image_setting_with_enable(
-                enabled_path, setting.path, value, channel
+                enabled_path, setting.path, value, channel, proxy
             ),
             setting.path,
             channel,
+            proxy,
         )
 
     def close(self) -> None:

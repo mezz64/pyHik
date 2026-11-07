@@ -60,12 +60,14 @@ class FakeCamera:
     """A device that holds an ImageChannel document and enforces the
     WDR / HLC / BLC exclusivity against its *current* state."""
 
-    def __init__(self, xml=VALUES, full_put_supported=True, hlc_wdr_code=None, hlc_on_code=None):
+    def __init__(self, xml=VALUES, full_put_supported=True, hlc_wdr_code=None, base=IMAGE,
+                 hlc_on_code=None):
         self.xml = xml
         # Firmware that answers 403 with this code when HLC and WDR would both be on.
         self.hlc_wdr_code = hlc_wdr_code
         # Code for turning HLC on while WDR is on, if the firmware uses a different one.
         self.hlc_on_code = hlc_on_code or hlc_wdr_code
+        self.base = base
         self.full_put_supported = full_put_supported
         self.puts = []  # (path, body)
 
@@ -81,7 +83,7 @@ class FakeCamera:
         resp = MagicMock(headers={})
         if method == "GET":
             resp.status_code = 200
-            if path == IMAGE:
+            if path == self.base:
                 resp.content = self.xml.encode()
             else:
                 top = path.rsplit("/", 1)[1]
@@ -91,9 +93,9 @@ class FakeCamera:
 
         body = data.decode()
         self.puts.append((path, body))
-        if path == IMAGE and not self.full_put_supported:
+        if path == self.base and not self.full_put_supported:
             return self._reply(resp, 400, False, "notSupport")
-        if path == IMAGE:
+        if path == self.base:
             new = body
             enabling_wdr = (
                 get_text(new, "WDR/mode") not in (None, "close") and not self._wdr_on()

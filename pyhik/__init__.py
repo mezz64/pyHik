@@ -27,10 +27,12 @@ from pyhik.isapi import (
     DeviceCapabilities,
 )
 from pyhik.image import (
+    ImageChannelInfo,
     ImageSetting,
     ImageSettingType,
     ImageWriteResult,
     parse_image_capabilities,
+    parse_image_channels,
     parse_image_values,
 )
 
@@ -62,9 +64,11 @@ __all__ = [
     'EventState',
     'DeviceCapabilities',
     # Image settings
+    'ImageChannelInfo',
     'ImageSetting',
     'ImageSettingType',
     'ImageWriteResult',
     'parse_image_capabilities',
+    'parse_image_channels',
     'parse_image_values',
 ]
