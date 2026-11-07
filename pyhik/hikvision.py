@@ -918,6 +918,10 @@ class HikCamera(object):
                     # We need to reset the connection.
                     raise ValueError('Watchdog failed.')
 
+                # Some devices end the response normally from time to time.
+                _LOGGING.debug('%s Stream closed by device, reconnecting.',
+                               self.name)
+
             # RequestException is the base class of every requests error and
             # covers read timeouts, which is how a silently dropped connection
             # surfaces. Anything not caught here kills the stream thread and
