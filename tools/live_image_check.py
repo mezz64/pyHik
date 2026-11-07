@@ -36,8 +36,10 @@ give the channel ID of the attached camera, for example the camera on channel 3:
     python tools/live_image_check.py --channel 3
     python tools/live_image_check.py --channel 3 --write --path Color/contrastLevel
 
-An NVR is detected from the device's own type (NVR or DVR) and then its attached cameras
-are used through the proxy endpoints. --proxy and --no-proxy override the detection.
+An NVR is detected from the device's own type (NVR or DVR). A recorder that reports the
+type of a camera (IPC) is detected by its camera image endpoints failing while the proxy
+endpoints work. Its attached cameras are then used through the proxy endpoints.
+--proxy and --no-proxy override the detection.
 
 Optional: CAMERA_PORT (80), CAMERA_SSL=1, CAMERA_VERIFY_SSL=0.
 
@@ -426,7 +428,12 @@ def check_bad_password(report, out):
 
 
 def detect_proxy(client, proxy, out):
-    """Use the proxy endpoints for an NVR/DVR unless --proxy/--no-proxy says otherwise."""
+    """Decide whether to use the proxy endpoints (unless --proxy/--no-proxy says).
+
+    An NVR or DVR is recognised by its device type. Some recorders report the type of a
+    camera (IPC, for example) and real cameras report it too; the type alone is not
+    enough: if the camera endpoints fail, the proxy endpoints are tried before giving up.
+    """
     if proxy is not None:
         out("proxy endpoints: %s (set on the command line)" % ("yes" if proxy else "no"))
         return proxy
@@ -435,9 +442,23 @@ def detect_proxy(client, proxy, out):
     except Exception as err:  # fall back to a camera
         out("proxy endpoints: no (could not read the device type: %s)" % type(err).__name__)
         return False
-    proxy = str(device_type).strip().upper() in ("NVR", "DVR")
-    out("proxy endpoints: %s (device type %s)" % ("yes" if proxy else "no", device_type))
-    return proxy
+    if str(device_type).strip().upper() in ("NVR", "DVR"):
+        out("proxy endpoints: yes (device type %s)" % device_type)
+        return True
+    try:
+        client.get_image_channels(proxy=False)
+    except (ISAPIAuthError, ISAPIConnectionError):
+        pass  # not a reason to try other endpoints; the checks report it
+    except ISAPIError as err:
+        out("camera image endpoints failed (%s); trying the proxy endpoints" % _describe(err))
+        try:
+            if client.get_image_channels(proxy=True):
+                out("proxy endpoints: yes (device type %s, but the proxy endpoints work)" % device_type)
+                return True
+        except ISAPIError:
+            pass
+    out("proxy endpoints: no (device type %s)" % device_type)
+    return False
 
 
 def run(client, channel=None, proxy=None, write=False, path=None, conflicts=False,
