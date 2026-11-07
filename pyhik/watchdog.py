@@ -6,7 +6,7 @@ Copyright (c) 2017-2018 John Mihalic <https://github.com/mezz64>
 Licensed under the MIT license.
 """
 
-from threading import RLock, Timer
+from threading import Lock, Timer
 
 
 class Watchdog(object):
@@ -21,8 +21,8 @@ class Watchdog(object):
         # replaced or stopped can tell it is stale.
         self._token = None
         # start(), pet() and stop() run on the stream thread while expiries
-        # run on timer threads. Reentrant because the handler may call stop().
-        self._lock = RLock()
+        # run on timer threads.
+        self._lock = Lock()
         return
 
     def start(self):
@@ -65,4 +65,6 @@ class Watchdog(object):
                 return
             self._timer = None
             self._token = None
-            self.handler()
+        # Outside the lock, so a slow handler cannot hold up pet() and stop(),
+        # and the handler may call them itself.
+        self.handler()

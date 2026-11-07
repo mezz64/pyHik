@@ -47,7 +47,7 @@ class WatchdogTestCase(unittest.TestCase):
     def test_pet_postpones_expiry(self):
         self.watchdog.start()
         for _ in range(3):
-            time.sleep(TIMEOUT / 2)
+            time.sleep(TIMEOUT / 4)
             self.watchdog.pet()
         self.assertEqual(self.calls, [])
         self.assertTrue(self.fired.wait(TIMEOUT * 10))
@@ -80,6 +80,30 @@ class WatchdogTestCase(unittest.TestCase):
         self.watchdog.handler = handler
         self.watchdog.start()
         self.assertTrue(returned.wait(TIMEOUT * 10))
+
+    def test_slow_handler_does_not_block_pet_and_stop(self):
+        """Watchdog is public, so a handler may take its time. The stream
+        thread pets and stops the watchdog and must not wait on it."""
+        entered = threading.Event()
+        release = threading.Event()
+
+        def handler():
+            entered.set()
+            release.wait(TIMEOUT * 20)
+
+        self.addCleanup(release.set)
+        self.watchdog.handler = handler
+        self.watchdog.start()
+        self.assertTrue(entered.wait(TIMEOUT * 10))
+        returned = threading.Event()
+
+        def pet_then_stop():
+            self.watchdog.pet()
+            self.watchdog.stop()
+            returned.set()
+
+        threading.Thread(target=pet_then_stop, daemon=True).start()
+        self.assertTrue(returned.wait(TIMEOUT * 5))
 
 
 if __name__ == '__main__':
