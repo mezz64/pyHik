@@ -11,7 +11,9 @@ import xml.etree.ElementTree as ET
 
 from unittest.mock import call, MagicMock, patch, PropertyMock
 from requests.auth import HTTPDigestAuth
-from pyhik.hikvision import HikCamera, inject_events_into_camera
+from pyhik.hikvision import (
+    HikCamera, get_video_channels, inject_events_into_camera
+)
 from pyhik.constants import (
     CONNECT_TIMEOUT, DOWNLOAD_TIMEOUT, NVR_DEVICE, VALID_NOTIFICATION_METHODS
 )
@@ -1314,6 +1316,68 @@ class PartialAlertPacketTestCase(unittest.TestCase):
 
         self.assertTrue(camera.fetch_attributes("Motion", 1)[0])
         self.assertEqual(len(published), 1)
+
+
+INPUT_PROXY_CHANNELS_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<InputProxyChannelList version="1.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+    <InputProxyChannel>
+        <id>1</id>
+        <name>Front Door</name>
+    </InputProxyChannel>
+    <InputProxyChannel>
+        <id>2</id>
+        <name>Driveway</name>
+    </InputProxyChannel>
+</InputProxyChannelList>"""
+
+
+class VideoChannelsVerifySslTestCase(unittest.TestCase):
+    """Certificate verification in get_video_channels().
+
+    An NVR ships with a self-signed certificate, so a caller has to be able
+    to use HTTPS without verifying it, as HikCamera(verify_ssl=False) allows.
+    """
+
+    def _fetch(self, **kwargs):
+        """Call get_video_channels() against a session that answers 200."""
+        with patch('pyhik.hikvision.requests.Session') as session_class:
+            session = session_class.return_value
+            session.get.return_value = MagicMock(
+                status_code=requests.codes.ok, text=INPUT_PROXY_CHANNELS_XML)
+            channels = get_video_channels(
+                '192.168.1.10', 443, 'admin', 'password', **kwargs)
+        return session, channels
+
+    def test_http_does_not_verify(self):
+        session, channels = self._fetch()
+
+        self.assertIs(session.verify, False)
+        self.assertTrue(
+            session.get.call_args[0][0].startswith('http://192.168.1.10:443/'))
+        self.assertEqual([channel.id for channel in channels], [1, 2])
+
+    def test_https_verifies_by_default(self):
+        """Callers that only pass ssl keep the behaviour they had."""
+        session, channels = self._fetch(ssl=True)
+
+        self.assertIs(session.verify, True)
+        self.assertTrue(
+            session.get.call_args[0][0].startswith('https://192.168.1.10:443/'))
+        self.assertEqual([channel.id for channel in channels], [1, 2])
+
+    def test_https_without_verification(self):
+        session, channels = self._fetch(ssl=True, verify_ssl=False)
+
+        self.assertIs(session.verify, False)
+        self.assertTrue(
+            session.get.call_args[0][0].startswith('https://192.168.1.10:443/'))
+        self.assertEqual(
+            [channel.name for channel in channels], ['Front Door', 'Driveway'])
+
+    def test_https_with_explicit_verification(self):
+        session, _ = self._fetch(ssl=True, verify_ssl=True)
+
+        self.assertIs(session.verify, True)
 
 
 if __name__ == "__main__":
