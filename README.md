@@ -54,6 +54,7 @@ camera.disconnect()
 * `get_id` - unique camera/NVR id
 * `get_name` - camera/NVR name
 * `get_type` - device type (`CAM` or `NVR`)
+* `auth_failed` - `True` if the device answered but rejected the credentials, so a missing `get_id` can be told apart from an unreachable device
 * `current_event_states` - dictionary of all tracked events and their current state
 * `current_motion_detection_state` - current motion detection on/off state
 * `stream_connected` - whether the event stream is currently connected

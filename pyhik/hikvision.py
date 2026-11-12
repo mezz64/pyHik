@@ -126,6 +126,9 @@ class HikCamera(object):
         self.pwd = pwd
         self.cam_id = 0
         self.name = ''
+        # True if the device answered but rejected the credentials, so that a
+        # missing device ID can be told apart from an unreachable device.
+        self.auth_failed = False
         self.device_type = None
         self.device_model = ''
         self.firmware_version = ''
@@ -583,6 +586,7 @@ class HikCamera(object):
         device_info = {}
         url = '%s/ISAPI/System/deviceInfo' % self.root_url
         using_digest = False
+        self.auth_failed = False
 
         try:
             response = self.hik_request.get(url, timeout=CONNECT_TIMEOUT)
@@ -614,6 +618,7 @@ class HikCamera(object):
 
         if response.status_code == requests.codes.unauthorized:
             _LOGGING.error('Authentication failed')
+            self.auth_failed = True
             return None
 
         if response.status_code != requests.codes.ok:
