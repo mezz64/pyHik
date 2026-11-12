@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ImageChannellist version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<ImageChannel version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<id>1</id>
+<enabled>true</enabled>
+<videoInputID>1</videoInputID>
+<ImageFlip version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<enabled>false</enabled>
+</ImageFlip>
+<WDR version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<enabled>false</enabled>
+<WDRLevel>41</WDRLevel>
+</WDR>
+<WDRExt version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<mode>close</mode>
+<WDRLevel>41</WDRLevel>
+</WDRExt>
+<BLC version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<enabled>true</enabled>
+<BLCMode>AUTO</BLCMode>
+</BLC>
+<IrcutFilter version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<IrcutFilterType>night</IrcutFilterType>
+<IrcutFilterLevel>normal</IrcutFilterLevel>
+<IrcutFilterTime>5</IrcutFilterTime>
+</IrcutFilter>
+<IrcutFilterExt version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<IrcutFilterType>night</IrcutFilterType>
+<nightToDayFilterLevel>normal</nightToDayFilterLevel>
+<nightToDayFilterTime>5</nightToDayFilterTime>
+</IrcutFilterExt>
+<WhiteBlance version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<WhiteBlanceStyle>auto1</WhiteBlanceStyle>
+<WhiteBlanceRed>43</WhiteBlanceRed>
+<WhiteBlanceBlue>47</WhiteBlanceBlue>
+</WhiteBlance>
+<Shutter version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<ShutterLevel>1/120</ShutterLevel>
+</Shutter>
+<HLC version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<enabled>true</enabled>
+<HLCLevel>50</HLCLevel>
+</HLC>
+</ImageChannel>
+</ImageChannellist>

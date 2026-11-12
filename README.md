@@ -99,11 +99,12 @@ with ISAPIClient('X.X.X.X', port=80, username='admin', password='1234') as clien
 * `reboot()` - reboot the device
 * `custom_request(...)` - issue an arbitrary ISAPI request for endpoints not otherwise wrapped
 * `request_raw(method, endpoint, body=None)` - like `custom_request` but sends the body unmodified and returns the unparsed response (`RawResponse`: status code, bytes, case-insensitive headers) without raising on HTTP error statuses (after a 401 the request is retried once with Digest auth)
-* `get_image_settings(channel=1)` - list the image settings a camera supports (shutter, gain, WDR, BLC, day/night, ...) with their current values (`ImageSetting` objects, see `pyhik.image`)
-* `get_image_values(channel=1)` - read only the current values as `{path: value}`; cheap enough to poll
-* `set_image_setting(path, value, channel=1)` - change one image setting; known conflicts between settings are resolved automatically
-* `set_image_linked_setting(setting, value, channel=1)` - set a select that also controls an `enabled` flag, such as BLC mode
-* `put_image_settings(changes, channel=1)` - lower level: write several `{path: value}` changes in one request, without conflict handling
+* `get_image_settings(channel=1, proxy=False)` - list the image settings a camera supports (shutter, gain, WDR, BLC, day/night, ...) with their current values (`ImageSetting` objects, see `pyhik.image`)
+* `get_image_values(channel=1, proxy=False)` - read only the current values as `{path: value}`; cheap enough to poll
+* `set_image_setting(path, value, channel=1, proxy=False)` - change one image setting; known conflicts between settings are resolved automatically
+* `set_image_linked_setting(setting, value, channel=1, proxy=False)` - set a select that also controls an `enabled` flag, such as BLC mode
+* `put_image_settings(changes, channel=1, proxy=False)` - lower level: write several `{path: value}` changes in one request, without conflict handling
+* `get_image_channels(proxy=False)` - list the channel IDs that have image settings (`ImageChannelInfo`)
 
 ### Image settings
 
@@ -116,7 +117,13 @@ settings["Color/brightnessLevel"].value    # '80'
 settings["Shutter/ShutterLevel"].options   # ['1/3', '1/6', ..., '1/100000']
 ```
 
-Reading raises `ISAPINotSupportedError` (a subclass of `ISAPINotFoundError`) if the device does not offer the endpoint (404, 501 or a `notSupport` reply), `ISAPIAuthError` for credential or permission problems and `ISAPIConnectionError` if the device cannot be reached. These exceptions carry `status_code` and `sub_status`, the HTTP status and the device's `subStatusCode`.
+Reading raises:
+
+* `ISAPINotSupportedError` (a subclass of `ISAPINotFoundError`) if the device does not offer the endpoint (404, 501 or a `notSupport` reply)
+* `ISAPIAuthError` for credential or permission problems
+* `ISAPIConnectionError` if the device cannot be reached
+
+These exceptions carry `status_code` and `sub_status`, the HTTP status and the device's `subStatusCode`.
 
 Changing a setting:
 
@@ -125,7 +132,32 @@ result = client.set_image_setting("Shutter/ShutterLevel", "1/500")
 result.success, result.sub_status          # True, 'ok'
 ```
 
-A write reads the full document, changes only the target value as text and sends it back, which the devices require. Some settings conflict (enabling WDR while BLC or HLC is on, and the reverse); the setting in the way is switched off first. Firmware that reports the HLC conflict as `HLCMutexWDROrDehaze` or `WDROrDehazeMutexHLC` (HTTP 403) is handled the same way: HLC is switched off when WDR or defog is turned on, and WDR and defog are switched off when HLC is turned on. The settings that were switched off to make room are listed in `ImageWriteResult.also_changed` (for example `{"HLC/enabled": "false"}`). If a conflict cannot be resolved, `ImageWriteResult.error_description` explains it. Cameras that reject writes to the full document with `notSupport` but accept a per-feature sub-endpoint (for example `/ISAPI/Image/channels/1/Shutter`) are handled automatically when all the changes belong to the same feature (for example `BLC/enabled` and `BLC/BLCMode`). Writes are not atomic, so avoid overlapping writes to the same device.
+A write reads the full document, changes only the target value and sends it back, which is what the devices require.
+
+* Some settings conflict (enabling WDR while BLC or HLC is on and the reverse); the setting in the way is switched off first.
+* Firmware that reports the HLC conflict as `HLCMutexWDROrDehaze` or `WDROrDehazeMutexHLC` (HTTP 403) is handled the same way: HLC is switched off when WDR or defog is turned on; WDR and defog are switched off when HLC is turned on.
+* The settings that were switched off to make room are listed in `ImageWriteResult.also_changed` (example `{"HLC/enabled": "false"}`).
+* If a conflict cannot be resolved `ImageWriteResult.error_description` has the explanation.
+* Cameras that reject writes to the full document with `notSupport` but accept a per-feature sub-endpoint (example `/ISAPI/Image/channels/1/Shutter`) are handled automatically when all the changes belong to the same feature (example `BLC/enabled` and `BLC/BLCMode`).
+* Writes are not atomic, avoid overlapping writes to the same device.
+
+For the cameras attached to an NVR, pass `proxy=True` (`/ISAPI/ContentMgmt/ImageProxy/channels/<id>`) and use the IDs returned by `get_image_channels(proxy=True)`:
+
+```python
+for channel in client.get_image_channels(proxy=True):
+    settings = client.get_image_settings(channel.id, proxy=True)
+```
+
+* The sub-endpoint fallback is not used through the NVR.
+* An NVR may list a channel whose camera it cannot proxy; reading it raises `ISAPINotSupportedError`.
+
+Recorders do not always report what they are; be ready to fall back to the NVR endpoints:
+
+* A recorder may report `deviceType` `IPC`, the type a camera reports; the type alone cannot tell an NVR from a camera.
+* If the direct listing fails, try `get_image_channels(proxy=True)`.
+* An NVR may reject the camera endpoints (`/ISAPI/Image/channels`) with HTTP 503 `serviceUnavailable` or 400 `badXmlContent`. pyhik raises a plain `ISAPIError` for these; catching only `ISAPINotSupportedError` will not catch them.
+* `ISAPINotSupportedError` only means that the device says it does not offer the endpoint: HTTP 404, 501 or a `notSupport` reply.
+* For any other error, check `status_code` and `sub_status` on the exception.
 
 # TODO
 

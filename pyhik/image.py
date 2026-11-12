@@ -568,3 +568,55 @@ def apply_enable_and_mode(
     else:
         edited = raw_insert_after(edited, enabled_path, mode_path, mode_value)
     return edited
+
+
+@dataclass
+class ImageChannelInfo:
+    """One entry of a device's image channel list.
+
+    Attributes:
+        id: The channel ID to pass back to the image methods unchanged.
+        enabled: Whether the channel is enabled, if reported.
+        input_port: The video input port, if reported (``inputPort`` on an
+            NVR, ``videoInputID`` on a camera).
+    """
+
+    id: int
+    enabled: Optional[bool] = None
+    input_port: Optional[int] = None
+
+
+def parse_image_channels(xml: Union[str, bytes]) -> List[ImageChannelInfo]:
+    """Parse a list of image channels (``ImageChannellist``).
+
+    Namespace-agnostic. A document whose root is a single ``ImageChannel`` is
+    accepted too. Entries without a usable integer ``id`` are skipped, and a
+    repeated ``id`` is listed once.
+    """
+    root = _parse(xml)
+    if _strip_ns(root.tag) == "ImageChannel":
+        nodes = [root]
+    else:
+        nodes = [e for e in root.iter() if _strip_ns(e.tag) == "ImageChannel"]
+
+    channels: List[ImageChannelInfo] = []
+    seen: Set[int] = set()
+    for node in nodes:
+        raw_id = _child_text(node, "id")
+        try:
+            channel_id = int(raw_id)
+        except ValueError:
+            continue
+        if channel_id in seen:
+            continue
+        seen.add(channel_id)
+        enabled_text = _child_text(node, "enabled").lower()
+        port_text = _child_text(node, "inputPort") or _child_text(node, "videoInputID")
+        channels.append(
+            ImageChannelInfo(
+                id=channel_id,
+                enabled=(enabled_text == "true") if enabled_text else None,
+                input_port=int(port_text) if port_text.isdigit() else None,
+            )
+        )
+    return channels
