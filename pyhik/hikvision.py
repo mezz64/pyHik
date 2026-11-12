@@ -1470,7 +1470,8 @@ def inject_events_into_camera(camera, events):
     camera.inject_events(events)
 
 
-def get_video_channels(host, port, username, password, ssl=False):
+def get_video_channels(host, port, username, password, ssl=False,
+                       verify_ssl=None):
     """Fetch available video input channels from Hikvision device.
 
     This queries the ISAPI to discover available camera channels on
@@ -1482,6 +1483,10 @@ def get_video_channels(host, port, username, password, ssl=False):
         username: Authentication username.
         password: Authentication password.
         ssl: Whether to use HTTPS (default False).
+        verify_ssl: Whether to verify the device's certificate when HTTPS
+            is used. Defaults to the value of ssl, which is how this
+            function behaved before the argument existed. Pass False for
+            a device with a self-signed certificate.
 
     Returns:
         List of VideoChannel objects.
@@ -1495,7 +1500,7 @@ def get_video_channels(host, port, username, password, ssl=False):
 
     session = requests.Session()
     session.auth = HTTPDigestAuth(username, password)
-    session.verify = ssl
+    session.verify = ssl if verify_ssl is None else verify_ssl
 
     # Try different ISAPI endpoints for channel discovery
     urls = [
