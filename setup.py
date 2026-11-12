@@ -41,8 +41,11 @@ setup(
     python_requires='>=3.10',
     install_requires=[
         'requests>=2.20.0',
+        'xmltodict>=0.13.0',
     ],
     extras_require={
-        'isapi': ['xmltodict>=0.13.0'],
+        # xmltodict is now always installed; the extra stays so that
+        # 'pip install pyHik[isapi]' keeps working.
+        'isapi': [],
     },
 )

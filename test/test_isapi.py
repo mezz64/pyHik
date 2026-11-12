@@ -7,9 +7,6 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 
-# xmltodict is an optional extra (pip install pyHik[isapi]); tests that need
-# response parsing are skipped when it isn't installed.
-from pyhik.isapi import xmltodict
 from pyhik.isapi import (
     ISAPIClient,
     ISAPIError,
@@ -181,7 +178,6 @@ class TestISAPIClientBasics(unittest.TestCase):
 class TestISAPIClientRequests(unittest.TestCase):
     """Test ISAPIClient HTTP request handling."""
 
-    @unittest.skipIf(xmltodict is None, "requires the isapi extra")
     def test_auth_detection_digest(self, mock_session_class):
         """Test digest auth detection."""
         session = mock_session_class.return_value

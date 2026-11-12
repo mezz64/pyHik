@@ -18,6 +18,7 @@ from urllib.parse import quote, urlparse, urlunparse
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 from requests.structures import CaseInsensitiveDict
+import xmltodict
 
 from pyhik.image import (
     ImageChannelInfo,
@@ -31,11 +32,6 @@ from pyhik.image import (
     parse_image_values,
     parse_response_status,
 )
-
-try:
-    import xmltodict
-except ImportError:
-    xmltodict = None
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -353,11 +349,6 @@ class ISAPIClient:
 
     def _parse_xml(self, text: str) -> Dict[str, Any]:
         """Parse XML response to dictionary."""
-        if xmltodict is None:
-            raise ISAPIError(
-                "xmltodict is required for ISAPI client. "
-                "Install it with: pip install xmltodict"
-            )
         try:
             return xmltodict.parse(text)
         except Exception:
@@ -365,11 +356,6 @@ class ISAPIClient:
 
     def _unparse_xml(self, data: Dict[str, Any]) -> str:
         """Convert dictionary to XML string."""
-        if xmltodict is None:
-            raise ISAPIError(
-                "xmltodict is required for ISAPI client. "
-                "Install it with: pip install xmltodict"
-            )
         return xmltodict.unparse(data)
 
     def request(
