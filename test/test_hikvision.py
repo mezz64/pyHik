@@ -1004,6 +1004,37 @@ class StreamReliabilityTestCase(unittest.TestCase):
         # The backoff it was sitting in is 5s, and grows with every failure.
         self.assertLess(time.monotonic() - started, 4)
 
+    def test_stream_ended_by_device_leaves_one_watchdog_timer(self):
+        """Some NVRs end the response normally and the loop reconnects at
+        once. Each connection starts the watchdog; a timer left behind by the
+        previous one would reset the stream 300s later (#149)."""
+        camera = make_camera()
+        camera.hik_request_stream = MagicMock()
+        kill_event = threading.Event()
+        connections = []
+
+        def lines():
+            connections.append(1)
+            if len(connections) == 2:
+                kill_event.set()
+            return iter([])
+
+        camera.hik_request_stream.get.return_value = MagicMock(
+            status_code=requests.codes.ok, iter_lines=lines)
+
+        timers = []
+
+        def new_timer(*args, **kwargs):
+            timers.append(MagicMock())
+            return timers[-1]
+
+        with patch("pyhik.watchdog.Timer", side_effect=new_timer):
+            camera.alert_stream(threading.Event(), kill_event)
+
+        self.assertEqual(len(timers), 2)
+        for timer in timers:
+            timer.cancel.assert_called()
+
     def test_a_killed_stream_does_not_reconnect(self):
         """The kill event can arrive while the thread is between attempts.
         Reconnecting then leaves a thread nobody is going to join again."""
