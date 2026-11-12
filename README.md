@@ -13,9 +13,9 @@ Code is licensed under the MIT license.
 
 * Python 3.10+
 * [requests](https://pypi.org/project/requests/) >= 2.20.0
+* [xmltodict](https://pypi.org/project/xmltodict/) >= 0.13.0 - used by `ISAPIClient`
 
 Optional:
-* `xmltodict` >= 0.13.0 - required for `ISAPIClient` (install with the `isapi` extra)
 * [pyDispatcher](https://pypi.org/project/PyDispatcher/) 2.0.5 - only needed if you want `HikCamera` to also broadcast updates via `pydispatch` signals; the built-in callback mechanism (`add_update_callback`) works without it
 
 # Installation
@@ -24,11 +24,7 @@ Optional:
 pip install pyhik
 ```
 
-To also use `ISAPIClient`:
-
-```
-pip install pyhik[isapi]
-```
+`ISAPIClient` is included. (`pip install pyhik[isapi]` still works, but the extra is no longer needed.)
 
 # Usage - Event streaming (`HikCamera`)
 
