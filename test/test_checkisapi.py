@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+"""Tests for pyhik.checkisapi, the live check run by hand against a real device."""
+
+import unittest
+from unittest.mock import patch
+
+from pyhik import __main__ as pyhik_main
+from pyhik import checkisapi
+from pyhik.image import ImageSetting, ImageSettingType as T
+from pyhik.isapi import ISAPIAuthError, ISAPIConnectionError, ISAPIError
+
+E503 = ISAPIError("Request failed with status 503", 503, "serviceUnavailable")
+E400 = ISAPIError("bad", 400, "badXmlContent")
+
+
+class FakeDetect:
+    """Answers the two calls detect_proxy makes."""
+
+    def __init__(self, device_type, camera, proxy):
+        self.device_type, self.camera, self.proxy = device_type, camera, proxy
+        self.calls = []
+
+    def get_device_type(self):
+        if isinstance(self.device_type, Exception):
+            raise self.device_type
+        return self.device_type
+
+    def get_image_channels(self, proxy=False):
+        self.calls.append(proxy)
+        answer = self.proxy if proxy else self.camera
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+class TestDetectProxy(unittest.TestCase):
+    def detect(self, client, flag=None):
+        return checkisapi.detect_proxy(client, flag, lambda line: None)
+
+    def test_decisions(self):
+        cases = (
+            ("type unreadable, camera 503, proxy lists", FakeDetect(E503, E503, [1]), None, True),
+            ("type unreadable, camera 400, proxy lists", FakeDetect(E503, E400, [1]), None, True),
+            ("type unreadable, camera works", FakeDetect(E503, [1], E503), None, False),
+            ("type unreadable, camera 401", FakeDetect(E503, ISAPIAuthError("x", 401), [1]), None, False),
+            ("type unreadable, connection error", FakeDetect(E503, ISAPIConnectionError("x"), [1]), None, False),
+            ("type unreadable, both fail", FakeDetect(E503, E503, E503), None, False),
+            ("type IPC, camera 503, proxy lists", FakeDetect("IPC", E503, [1]), None, True),
+            ("type IPC, camera works", FakeDetect("IPC", [1], [1]), None, False),
+            ("type NVR", FakeDetect("NVR", E503, [1]), None, True),
+            ("type DVR", FakeDetect("dvr", E503, [1]), None, True),
+            ("--no-proxy wins", FakeDetect("NVR", E503, [1]), False, False),
+            ("--proxy wins", FakeDetect("IPC", [1], E503), True, True),
+        )
+        for name, client, flag, expected in cases:
+            with self.subTest(name):
+                self.assertIs(self.detect(client, flag), expected)
+
+    def test_an_nvr_type_needs_no_probe(self):
+        client = FakeDetect("NVR", E503, [1])
+        self.detect(client)
+        self.assertEqual(client.calls, [])
+
+
+class Result:
+    def __init__(self, success=True, also_changed=None):
+        self.success = success
+        self.also_changed = also_changed or {}
+
+    def __str__(self):
+        return "ok" if self.success else "failed"
+
+
+class FakeDevice:
+    """Keeps values; turning WDR on switches HLC off, as a device that has the conflict."""
+
+    def __init__(self, values, fail_restore=False):
+        self.values = dict(values)
+        self.sets = []
+        self.fail_restore = fail_restore
+
+    def get_image_values(self, channel=None, proxy=False):
+        return dict(self.values)
+
+    def set_image_setting(self, path, value, channel=None, proxy=False):
+        self.sets.append((path, value))
+        if self.fail_restore and len(self.sets) > 1 and path == "Color/brightnessLevel":
+            return Result(False)
+        also = {}
+        if path == "WDR/enabled" and value == "true" and self.values.get("HLC/enabled") == "true":
+            self.values["HLC/enabled"] = "false"
+            also = {"HLC/enabled": "false"}
+        self.values[path] = value
+        return Result(True, also)
+
+
+class DriftingDevice(FakeDevice):
+    """Something else (the camera itself, another user) changes a setting during the write."""
+
+    def set_image_setting(self, path, value, channel=None, proxy=False):
+        result = super().set_image_setting(path, value, channel, proxy)
+        if path == "Color/brightnessLevel":
+            self.values["Color/contrastLevel"] = "7"
+        return result
+
+
+class ErrorDevice(FakeDevice):
+    """Raises an error on the numbered call to set_image_setting or get_image_values."""
+
+    def __init__(self, values, write_errors=None, read_errors=None):
+        super().__init__(values)
+        self.write_errors = write_errors or {}
+        self.read_errors = read_errors or {}
+        self.reads = 0
+
+    def get_image_values(self, channel=None, proxy=False):
+        self.reads += 1
+        if self.reads in self.read_errors:
+            raise self.read_errors[self.reads]
+        return super().get_image_values(channel, proxy)
+
+    def set_image_setting(self, path, value, channel=None, proxy=False):
+        error = self.write_errors.get(len(self.sets) + 1)
+        if error:
+            self.sets.append((path, value))
+            raise error
+        return super().set_image_setting(path, value, channel, proxy)
+
+
+SETTINGS = [
+    ImageSetting("Color/brightnessLevel", T.NUMBER, min_value=0, max_value=100, value="50"),
+    ImageSetting("Color/contrastLevel", T.NUMBER, min_value=0, max_value=100, value="100"),
+    ImageSetting("WDR/enabled", T.SWITCH, value="false"),
+    ImageSetting("HLC/enabled", T.SWITCH, value="true"),
+    ImageSetting("IrcutFilter/IrcutFilterType", T.SELECT, options=["auto", "day", "night"], value="auto"),
+    ImageSetting("OnlyOne/mode", T.SELECT, options=["a"], value="a"),
+    ImageSetting("Unset/x", T.NUMBER, min_value=0, max_value=5, value=None),
+]
+VALUES = {s.path: s.value for s in SETTINGS if s.value is not None}
+
+
+class TestCheckWrite(unittest.TestCase):
+    def write(self, path, device=None):
+        device = device or FakeDevice(VALUES)
+        lines = []
+        report = checkisapi.Report(lines.append)
+        checkisapi.check_write(device, report, 1, False, SETTINGS, path, lines.append)
+        return device, report, lines
+
+    def test_default_is_a_number_moved_one_step_and_restored(self):
+        device, report, lines = self.write(None)
+        self.assertEqual(device.sets, [("Color/brightnessLevel", "51"), ("Color/brightnessLevel", "50")])
+        self.assertEqual(device.values, VALUES)
+        self.assertFalse(report.failed)
+        self.assertTrue(any("--path" in line for line in lines), "names paths to try")
+
+    def test_number_at_its_maximum_goes_down(self):
+        device, _, _ = self.write("Color/contrastLevel")
+        self.assertEqual(device.sets[0], ("Color/contrastLevel", "99"))
+        self.assertEqual(device.values, VALUES)
+
+    def test_select_takes_another_option(self):
+        device, report, _ = self.write("IrcutFilter/IrcutFilterType")
+        self.assertEqual(device.sets[0], ("IrcutFilter/IrcutFilterType", "day"))
+        self.assertEqual(device.values, VALUES)
+        self.assertFalse(report.failed)
+
+    def test_switch_is_flipped(self):
+        device, _, _ = self.write("HLC/enabled")
+        self.assertEqual(device.sets[0], ("HLC/enabled", "false"))
+        self.assertEqual(device.values, VALUES)
+
+    def test_setting_switched_off_to_make_room_is_put_back(self):
+        device, report, lines = self.write("WDR/enabled")
+        self.assertEqual(device.values, VALUES)
+        self.assertIn(("HLC/enabled", "true"), device.sets)
+        self.assertTrue(any("also switched off" in line for line in lines))
+        self.assertFalse(report.failed)
+
+    def test_nothing_to_try_is_skipped(self):
+        for path in ("OnlyOne/mode", "No/such", "Unset/x"):
+            with self.subTest(path):
+                device, report, _ = self.write(path)
+                self.assertEqual(device.sets, [])
+                self.assertFalse(report.failed)
+
+    def test_failed_restore_is_reported(self):
+        _, report, lines = self.write(None, FakeDevice(VALUES, fail_restore=True))
+        self.assertTrue(report.failed)
+        self.assertTrue(any("NOT RESTORED" in line for line in lines))
+
+    def test_only_what_the_write_switched_off_is_put_back(self):
+        device, report, _ = self.write(None, DriftingDevice(VALUES))
+        self.assertEqual(device.sets, [("Color/brightnessLevel", "51"), ("Color/brightnessLevel", "50")])
+        self.assertEqual(device.values["Color/contrastLevel"], "7", "not ours to change")
+        self.assertFalse(report.failed)
+
+    def test_an_error_while_restoring_does_not_hide_the_first_error(self):
+        device = ErrorDevice(VALUES, write_errors={2: ISAPIError("restore failed")},
+                             read_errors={2: ISAPIError("read back failed")})
+        lines = []
+        report = checkisapi.Report(lines.append)
+        with self.assertRaisesRegex(ISAPIError, "read back failed"):
+            checkisapi.check_write(device, report, 1, False, SETTINGS, None, lines.append)
+        self.assertTrue(report.failed)
+        self.assertTrue(any("NOT RESTORED" in line and "restore failed" in line for line in lines))
+
+    def test_no_request_is_sent_after_an_authentication_error(self):
+        device = ErrorDevice(VALUES, write_errors={1: ISAPIAuthError("bad", 401)})
+        lines = []
+        report = checkisapi.Report(lines.append)
+        with self.assertRaises(ISAPIAuthError):
+            checkisapi.check_write(device, report, 1, False, SETTINGS, None, lines.append)
+        self.assertEqual(device.sets, [("Color/brightnessLevel", "51")], "no restore attempt")
+        self.assertTrue(report.failed)
+        self.assertTrue(any("NOT TRIED" in line for line in lines))
+
+    def test_an_authentication_error_while_restoring_stops_the_restore_and_the_run(self):
+        device = ErrorDevice(VALUES, write_errors={2: ISAPIAuthError("bad", 401)})
+        lines = []
+        report = checkisapi.Report(lines.append)
+        with self.assertRaises(ISAPIAuthError):
+            checkisapi.check_write(device, report, 1, False, SETTINGS, "WDR/enabled", lines.append)
+        self.assertEqual(device.sets, [("WDR/enabled", "true"), ("WDR/enabled", "false")],
+                         "HLC/enabled is not tried after the authentication error")
+        self.assertTrue(report.failed)
+        self.assertTrue(any("NOT TRIED" in line and "HLC/enabled" in line for line in lines))
+
+
+class TestOtherValue(unittest.TestCase):
+    def test_each_kind(self):
+        by_path = {s.path: s for s in SETTINGS}
+        self.assertEqual(checkisapi.other_value(by_path["Color/brightnessLevel"]), "51")
+        self.assertEqual(checkisapi.other_value(by_path["Color/contrastLevel"]), "99")
+        self.assertEqual(checkisapi.other_value(by_path["WDR/enabled"]), "true")
+        self.assertEqual(checkisapi.other_value(by_path["HLC/enabled"]), "false")
+        self.assertEqual(checkisapi.other_value(by_path["IrcutFilter/IrcutFilterType"]), "day")
+        self.assertIsNone(checkisapi.other_value(by_path["OnlyOne/mode"]))
+
+
+ENV = {"CAMERA_HOST": "env-host", "CAMERA_PORT": "8080", "CAMERA_USERNAME": "env-user", "CAMERA_PASSWORD": "pw"}
+
+
+class TestSettings(unittest.TestCase):
+    def test_environment_only(self):
+        with patch.dict("os.environ", ENV, clear=True):
+            cfg = checkisapi.settings_from_env()
+        self.assertEqual((cfg["host"], cfg["port"], cfg["username"], cfg["password"]),
+                         ("env-host", 8080, "env-user", "pw"))
+
+    def test_defaults(self):
+        with patch.dict("os.environ", {"CAMERA_HOST": "h", "CAMERA_PASSWORD": "pw"}, clear=True):
+            cfg = checkisapi.settings_from_env()
+        self.assertEqual((cfg["port"], cfg["username"], cfg["ssl"], cfg["verify_ssl"]), (80, "admin", False, True))
+
+    def test_command_line_wins_over_the_environment(self):
+        with patch.dict("os.environ", ENV, clear=True):
+            cfg = checkisapi.settings_from_env(host="arg-host", port=81, username="arg-user")
+        self.assertEqual((cfg["host"], cfg["port"], cfg["username"]), ("arg-host", 81, "arg-user"))
+
+    def test_https_uses_port_443_unless_a_port_is_given(self):
+        base = {"CAMERA_HOST": "h", "CAMERA_PASSWORD": "pw"}
+        with patch.dict("os.environ", base, clear=True):
+            self.assertEqual(checkisapi.settings_from_env(ssl=True)["port"], 443)
+            self.assertEqual(checkisapi.settings_from_env(ssl=True, port=8443)["port"], 8443)
+            self.assertEqual(checkisapi.settings_from_env()["port"], 80)
+        with patch.dict("os.environ", dict(base, CAMERA_SSL="1"), clear=True):
+            cfg = checkisapi.settings_from_env()
+        self.assertEqual((cfg["ssl"], cfg["port"]), (True, 443))
+
+    def test_ssl_and_certificate_options_win_over_the_environment(self):
+        with patch.dict("os.environ", dict(ENV, CAMERA_SSL="0", CAMERA_VERIFY_SSL="1"), clear=True):
+            cfg = checkisapi.settings_from_env(ssl=True, verify_ssl=False)
+            self.assertEqual((cfg["ssl"], cfg["verify_ssl"]), (True, False))
+            cfg = checkisapi.settings_from_env()
+            self.assertEqual((cfg["ssl"], cfg["verify_ssl"]), (False, True))
+        with patch.dict("os.environ", dict(ENV, CAMERA_VERIFY_SSL="0"), clear=True):
+            self.assertFalse(checkisapi.settings_from_env()["verify_ssl"])
+
+    def test_host_on_the_command_line_is_enough(self):
+        with patch.dict("os.environ", {"CAMERA_PASSWORD": "pw"}, clear=True):
+            self.assertEqual(checkisapi.settings_from_env(host="h")["host"], "h")
+
+    def test_password_only_comes_from_the_environment(self):
+        with patch.dict("os.environ", ENV, clear=True):
+            self.assertEqual(checkisapi.settings_from_env(password="other")["password"], "other")
+        with patch.dict("os.environ", {"CAMERA_HOST": "h"}, clear=True):
+            with self.assertRaises(SystemExit) as raised:
+                checkisapi.settings_from_env()
+        self.assertIn("CAMERA_PASSWORD", str(raised.exception))
+
+
+class TestMain(unittest.TestCase):
+    def test_asks_for_the_environment_variables(self):
+        with patch.dict("os.environ", {}, clear=True):
+            with self.assertRaises(SystemExit) as raised:
+                checkisapi.main([])
+        self.assertIn("CAMERA_HOST", str(raised.exception))
+        self.assertIn("--host", str(raised.exception))
+
+    def test_host_port_and_username_reach_the_client_and_the_checks(self):
+        with patch.object(checkisapi, "client_from_env", return_value="client") as client, \
+                patch.object(checkisapi, "run", return_value=0) as run:
+            self.assertEqual(checkisapi.main(["--host", "h", "--port", "81", "--username", "u", "--bad-password"]), 0)
+        expected = {"host": "h", "port": 81, "username": "u", "ssl": None, "verify_ssl": None}
+        client.assert_called_once_with(**expected)
+        self.assertEqual(run.call_args.kwargs["overrides"], expected)
+
+    def test_ssl_and_no_verify_reach_the_client_and_the_checks(self):
+        with patch.object(checkisapi, "client_from_env", return_value="client") as client, \
+                patch.object(checkisapi, "run", return_value=0) as run:
+            checkisapi.main(["--ssl", "--no-verify"])
+        expected = {"host": None, "port": None, "username": None, "ssl": True, "verify_ssl": False}
+        client.assert_called_once_with(**expected)
+        self.assertEqual(run.call_args.kwargs["overrides"], expected)
+
+    def test_not_given_means_the_environment(self):
+        with patch.object(checkisapi, "client_from_env", return_value="client") as client, \
+                patch.object(checkisapi, "run", return_value=0):
+            checkisapi.main([])
+        client.assert_called_once_with(host=None, port=None, username=None, ssl=None, verify_ssl=None)
+
+class TestPackageCommand(unittest.TestCase):
+    """python -m pyhik <command>"""
+
+    def run_main(self, argv):
+        with patch("builtins.print"):
+            return pyhik_main.main(argv)
+
+    def test_no_command_prints_the_usage(self):
+        self.assertEqual(self.run_main([]), 2)
+        self.assertEqual(self.run_main(["--help"]), 0)
+
+    def test_unknown_command(self):
+        self.assertEqual(self.run_main(["nope"]), 2)
+
+    def test_checkisapi_gets_the_rest_of_the_arguments(self):
+        with patch.object(checkisapi, "main", return_value=7) as run:
+            self.assertEqual(pyhik_main.main(["checkisapi", "--write", "--path", "WDR/enabled"]), 7)
+        run.assert_called_once_with(["--write", "--path", "WDR/enabled"])
+
+    def test_checkisapi_help(self):
+        with patch("sys.stdout"), self.assertRaises(SystemExit) as raised:
+            pyhik_main.main(["checkisapi", "--help"])
+        self.assertEqual(raised.exception.code, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
