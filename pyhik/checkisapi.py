@@ -209,6 +209,7 @@ def _short(err):
 
 def _device_line(client, out):
     """Print what a bug report needs to know about the device (no serial number)."""
+    out("pyhik %s from %s" % (pyhik.__version__, os.path.dirname(pyhik.__file__)))
     parts = []
     for label, getter in (
         ("model", "get_device_model"),
@@ -217,9 +218,10 @@ def _device_line(client, out):
     ):
         try:
             parts.append("%s=%s" % (label, getattr(client, getter)() or "?"))
-        except Exception as err:  # not worth failing the run for
+        except ISAPIAuthError:
+            raise  # the run stops here: every further request would be one more failed login
+        except Exception as err:  # anything else is not worth failing the run for
             parts.append("%s=? (%s)" % (label, _short(err)))
-    out("pyhik %s from %s" % (pyhik.__version__, os.path.dirname(pyhik.__file__)))
     out("device: " + ", ".join(parts))
 
 
@@ -549,12 +551,16 @@ def detect_proxy(client, proxy, out):
     device information request at all, and real cameras answer both. So unless the
     type says NVR or DVR, the camera endpoints are tried first, and if they fail with
     a device error the proxy endpoints are tried before giving up.
+
+    An authentication or connection error on an image endpoint stops the detection.
     """
     if proxy is not None:
         out("proxy endpoints: %s (set on the command line)" % ("yes" if proxy else "no"))
         return proxy
     try:
         device_type = str(client.get_device_type()).strip()
+    except ISAPIAuthError:
+        raise
     except Exception as err:  # the endpoints below can still tell
         device_type = None
         out("device type: unknown (could not read it: %s)" % type(err).__name__)
@@ -564,13 +570,15 @@ def detect_proxy(client, proxy, out):
     try:
         client.get_image_channels(proxy=False)
     except (ISAPIAuthError, ISAPIConnectionError):
-        pass  # not a reason to try other endpoints; the checks report it
+        raise
     except ISAPIError as err:
         out("camera image endpoints failed (%s); trying the proxy endpoints" % _describe(err))
         try:
             if client.get_image_channels(proxy=True):
                 out("proxy endpoints: yes (the proxy endpoints work)")
                 return True
+        except (ISAPIAuthError, ISAPIConnectionError):
+            raise
         except ISAPIError:
             pass
     out("proxy endpoints: no (device type %s)" % (device_type or "unknown"))

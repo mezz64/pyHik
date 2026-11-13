@@ -7,10 +7,13 @@ from unittest.mock import patch
 from pyhik import __main__ as pyhik_main
 from pyhik import checkisapi
 from pyhik.image import ImageSetting, ImageSettingType as T
-from pyhik.isapi import ISAPIAuthError, ISAPIConnectionError, ISAPIError
+from pyhik.isapi import ISAPIAuthError, ISAPIClient, ISAPIConnectionError, ISAPIError
 
 E503 = ISAPIError("Request failed with status 503", 503, "serviceUnavailable")
 E400 = ISAPIError("bad", 400, "badXmlContent")
+E401 = ISAPIAuthError("Invalid credentials", 401)
+E403 = ISAPIAuthError("Insufficient permissions", 403)
+NO_CONNECTION = ISAPIConnectionError("Cannot connect to 192.168.1.100")
 
 
 class FakeDetect:
@@ -42,8 +45,7 @@ class TestDetectProxy(unittest.TestCase):
             ("type unreadable, camera 503, proxy lists", FakeDetect(E503, E503, [1]), None, True),
             ("type unreadable, camera 400, proxy lists", FakeDetect(E503, E400, [1]), None, True),
             ("type unreadable, camera works", FakeDetect(E503, [1], E503), None, False),
-            ("type unreadable, camera 401", FakeDetect(E503, ISAPIAuthError("x", 401), [1]), None, False),
-            ("type unreadable, connection error", FakeDetect(E503, ISAPIConnectionError("x"), [1]), None, False),
+            ("type unreadable (no connection), camera works", FakeDetect(NO_CONNECTION, [1], E503), None, False),
             ("type unreadable, both fail", FakeDetect(E503, E503, E503), None, False),
             ("type IPC, camera 503, proxy lists", FakeDetect("IPC", E503, [1]), None, True),
             ("type IPC, camera works", FakeDetect("IPC", [1], [1]), None, False),
@@ -60,6 +62,77 @@ class TestDetectProxy(unittest.TestCase):
         client = FakeDetect("NVR", E503, [1])
         self.detect(client)
         self.assertEqual(client.calls, [])
+
+    def test_an_authentication_or_connection_error_is_not_tried_on_another_endpoint(self):
+        cases = (
+            ("device type 401", FakeDetect(E401, [1], [1]), E401, []),
+            ("device type 403", FakeDetect(E403, [1], [1]), E403, []),
+            ("camera 401", FakeDetect("IPC", E401, [1]), E401, [False]),
+            ("camera 401, type unreadable", FakeDetect(E503, E401, [1]), E401, [False]),
+            ("camera 403", FakeDetect("IPC", E403, [1]), E403, [False]),
+            ("camera connection error", FakeDetect("IPC", NO_CONNECTION, [1]), NO_CONNECTION, [False]),
+            ("proxy 401", FakeDetect("IPC", E503, E401), E401, [False, True]),
+            ("proxy connection error", FakeDetect("IPC", E503, NO_CONNECTION), NO_CONNECTION, [False, True]),
+        )
+        for name, client, error, calls in cases:
+            with self.subTest(name):
+                with self.assertRaises(type(error)) as raised:
+                    self.detect(client)
+                self.assertIs(raised.exception, error)
+                self.assertEqual(client.calls, calls)
+
+
+class TestDeviceLine(unittest.TestCase):
+    def line(self, device_type):
+        client = FakeDetect(device_type, [1], [1])
+        client.get_device_model = client.get_firmware_version = client.get_device_type
+        lines = []
+        checkisapi._device_line(client, lines.append)
+        return lines
+
+    def test_a_device_that_does_not_answer_is_only_noted(self):
+        for error in (E503, NO_CONNECTION):
+            with self.subTest(error):
+                self.assertIn("model=? (%s" % type(error).__name__, self.line(error)[-1])
+
+    def test_an_authentication_error_is_raised(self):
+        for error in (E401, E403):
+            with self.subTest(error), self.assertRaises(ISAPIAuthError):
+                self.line(error)
+
+
+class Reply:
+    """An HTTP response, as far as ISAPIClient looks at one."""
+
+    def __init__(self, status_code=200, content=b""):
+        self.status_code, self.content, self.headers = status_code, content, {}
+        self.text = content.decode()
+
+
+class RejectsEveryLogin:
+    """Stands in for the client's HTTP session: a device that answers 401 to everything."""
+
+    def __init__(self):
+        self.calls = []
+
+    def request(self, method, url, **kwargs):
+        self.calls.append((method, url))
+        return Reply(401, b"<html><body>Unauthorized</body></html>")
+
+    def get(self, url, **kwargs):
+        return self.request("GET", url, **kwargs)
+
+
+class TestWrongPassword(unittest.TestCase):
+    def test_the_run_stops_at_the_first_authentication_error(self):
+        client = ISAPIClient("192.168.1.100", username="admin", password="wrong")
+        client._session = session = RejectsEveryLogin()
+        lines = []
+        with self.assertRaises(ISAPIAuthError):
+            checkisapi.run(checkisapi.remember_device_info(client), out=lines.append)
+        # The first request is all that is sent: the client tries Digest for it, then Basic.
+        self.assertEqual([url.rsplit("/", 1)[1] for _, url in session.calls], ["deviceInfo", "deviceInfo"])
+        self.assertTrue(lines[0].startswith("pyhik "), "the version is printed before anything is asked")
 
 
 class Result:

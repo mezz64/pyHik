@@ -117,6 +117,9 @@ If the device information request fails, the script prints, for example,
 only once, and falls back to trying the camera endpoints and then the NVR endpoints. That line
 is not a failure of the check. Please include it in a report, because it has the error.
 
+A rejected login or a missing permission (401 or 403) is not carried on from: the run
+stops at that request, here as everywhere else; a wrong password is not tried again.
+
 ## Reporting a problem
 
 Open an issue (or paste into the pull request) with:
