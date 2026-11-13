@@ -9,6 +9,7 @@ import time
 import unittest
 import xml.etree.ElementTree as ET
 
+from pathlib import Path
 from unittest.mock import call, MagicMock, patch, PropertyMock
 from requests.auth import HTTPDigestAuth
 from pyhik import hikvision
@@ -1546,6 +1547,83 @@ class NamespaceTestCase(unittest.TestCase):
 
         self.assertEqual([(c.id, c.name, c.enabled) for c in channels],
                          [(1, "Door", True)])
+
+
+# A door station's JSON alert stream (#148), with its malformed multipart
+# framing kept: stray part headers and boundaries run together.
+JSON_STREAM = (Path(__file__).parent / "fixtures"
+               / "alert_stream_json-VDM10.txt").read_bytes()
+
+
+def stream_once(camera, lines):
+    """Run alert_stream() over one connection that sends `lines`, then stop."""
+    kill_event = threading.Event()
+
+    def iter_lines():
+        yield from lines
+        kill_event.set()
+
+    camera.hik_request_stream = MagicMock()
+    camera.hik_request_stream.get.return_value = MagicMock(
+        status_code=requests.codes.ok, iter_lines=iter_lines)
+    camera.watchdog = MagicMock()
+    camera.alert_stream(threading.Event(), kill_event)
+
+
+class JsonAlertStreamTestCase(unittest.TestCase):
+    def test_json_event_to_xml(self):
+        xml = hikvision.json_event_to_xml(
+            '{"eventType": "videoloss", "channelID": 1, "flag": true,'
+            ' "empty": null, "bad key": 1,'
+            ' "Nested": {"serialNo": 7}, "items": [{"id": 1}, {"id": 2}]}')
+        tree = ET.fromstring(xml)
+
+        self.assertEqual(tree.tag, "EventNotificationAlert")
+        self.assertEqual(tree.findtext("eventType"), "videoloss")
+        self.assertEqual(tree.findtext("channelID"), "1")
+        self.assertEqual(tree.findtext("flag"), "true")
+        self.assertIsNotNone(tree.find("empty"))
+        self.assertEqual(tree.findtext("Nested/serialNo"), "7")
+        self.assertEqual([i.findtext("id") for i in tree.findall("items")],
+                         ["1", "2"])
+        # "bad key" is skipped: it is not a valid element name.
+        self.assertEqual(len(tree), 7)
+
+    def test_json_event_to_xml_needs_a_complete_object(self):
+        self.assertIsNone(hikvision.json_event_to_xml('{"eventType": '))
+        self.assertIsNone(hikvision.json_event_to_xml('[1, 2]'))
+
+    def test_json_heartbeats_pet_the_watchdog(self):
+        """Every videoloss heartbeat in the capture keeps the stream alive."""
+        camera = make_camera()
+        with patch.object(camera, "process_stream",
+                          wraps=camera.process_stream) as process:
+            stream_once(camera, JSON_STREAM.splitlines())
+
+        etypes = [c.args[0].findtext("eventType")
+                  for c in process.call_args_list]
+        self.assertEqual(etypes.count("videoloss"), 14)
+        self.assertEqual(etypes.count("AccessControllerEvent"), 7)
+        self.assertEqual(camera.watchdog.pet.call_count, 14)
+
+    def test_unparsed_json_part_is_dropped_at_the_boundary(self):
+        camera = make_camera()
+        stream_once(camera, [
+            b'--MIME_boundary', b'{', b'\t"eventType":\t"videol',
+            b'--MIME_boundary', b'{', b'\t"eventType":\t"videoloss"', b'}'])
+
+        self.assertEqual(camera.watchdog.pet.call_count, 1)
+
+    def test_failed_connection_logs_the_status_code(self):
+        camera = make_camera()
+        camera.hik_request_stream = MagicMock()
+        camera.hik_request_stream.get.return_value = MagicMock(
+            status_code=500)
+
+        with self.assertLogs("pyhik.hikvision", level=logging.WARNING) as logs:
+            camera.alert_stream(threading.Event(), killed_after(0))
+
+        self.assertIn("HTTP 500", logs.output[0])
 
 
 if __name__ == "__main__":

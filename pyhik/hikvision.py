@@ -13,7 +13,9 @@ http://oversea-download.hikvision.com/uploadfile/Leaflet/ISAPI/HIKVISION%20ISAPI
 """
 import datetime
 from dataclasses import dataclass
+import json
 import logging
+import re
 import uuid
 from urllib.parse import quote, urlparse, urlunparse
 
@@ -55,6 +57,43 @@ _BROKEN_ALERT_STREAM_DEVICES = [
 
 # Characters of an eventType-less alert packet written to the debug log.
 UNTYPED_PACKET_LOG_LIMIT = 1000
+
+# JSON keys that can be used as XML element names as they are.
+_XML_NAME = re.compile(r'^[A-Za-z_][\w.-]*$')
+
+
+def json_event_to_xml(text):
+    """Convert a JSON alert stream event to EventNotificationAlert XML.
+
+    Some devices, such as door stations, send their alert stream as JSON
+    parts instead of XML (#148). Rebuilding the same fields as XML lets
+    process_stream() handle them unchanged. Nested objects become nested
+    elements and lists become repeated elements. Returns None when text is
+    not (yet) a complete JSON object.
+    """
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    def add(parent, obj):
+        for key, value in obj.items():
+            if not _XML_NAME.match(key):
+                continue
+            for item in value if isinstance(value, list) else [value]:
+                child = ET.SubElement(parent, key)
+                if isinstance(item, dict):
+                    add(child, item)
+                elif isinstance(item, bool):
+                    child.text = 'true' if item else 'false'
+                elif item is not None:
+                    child.text = str(item)
+
+    root = ET.Element('EventNotificationAlert')
+    add(root, data)
+    return ET.tostring(root, encoding='unicode')
 
 
 @dataclass
@@ -825,6 +864,7 @@ class HikCamera(object):
         _LOGGING.debug('Stream Thread Started: %s, %s', self.name, self.cam_id)
         start_event = False
         parse_string = ""
+        json_string = ""
         fail_count = 0
 
         url = '%s/ISAPI/Event/notification/alertStream' % self.root_url
@@ -844,7 +884,8 @@ class HikCamera(object):
                                                                   READ_TIMEOUT))
 
                 if stream.status_code != requests.codes.ok:
-                    raise ValueError('Connection unsucessful.')
+                    raise ValueError('Connection unsucessful (HTTP %s).'
+                                     % stream.status_code)
                 else:
                     _LOGGING.debug('%s Connection Successful.', self.name)
                     fail_count = 0
@@ -876,6 +917,23 @@ class HikCamera(object):
                         else:
                             if start_event:
                                 parse_string += str_line
+                            elif str_line.startswith('--'):
+                                # Part boundary: drop a JSON part that
+                                # never parsed.
+                                json_string = ""
+                            elif str_line.startswith('{') or json_string:
+                                # A JSON part (#148): collect lines until
+                                # they parse, then handle it as XML.
+                                json_string += str_line
+                                xml_string = json_event_to_xml(json_string)
+                                if xml_string is not None:
+                                    try:
+                                        tree = ET.fromstring(xml_string)
+                                        self.process_stream(tree, json_string)
+                                        self.update_stale()
+                                    except ET.ParseError:
+                                        _LOGGING.warning('JSON event could not be converted.')
+                                    json_string = ""
 
                     if kill_event.is_set():
                         # We were asked to stop the thread so lets do so.
@@ -912,6 +970,7 @@ class HikCamera(object):
                 _LOGGING.warning('%s Connection Failed (count=%d). Waiting %ss. Err: %s',
                                  self.name, fail_count, (fail_count * 5) + 5, err)
                 parse_string = ""
+                json_string = ""
                 self.watchdog.stop()
                 self.hik_request_stream.close()
                 # disconnect() sets the kill event and then joins this thread
