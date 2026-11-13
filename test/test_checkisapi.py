@@ -4,6 +4,7 @@
 import logging
 from pathlib import Path
 import re
+import requests
 import unittest
 from unittest.mock import patch
 from urllib.parse import urlparse
@@ -319,22 +320,38 @@ class TestCheckWrite(unittest.TestCase):
         self.assertTrue(any("NOT TRIED" in line and "HLC/enabled" in line for line in lines))
 
 
+LOST = "connection lost"
+
+
 class SimCamera(FakeCamera):
     """The FakeCamera of the write tests, with the other documents checkisapi reads.
 
     It stands in for the HTTP session of a real ISAPIClient, so pyhik's own conflict
     handling runs. With forgets_blc_mode the document has no BLCMode while BLC is off, as
     on a real camera, and BLC switched on without a mode comes on with the mode UP.
+
+    fail={number: what} makes the request with that number (the first is 1) fail, and
+    fail_from=(number, what) every request from that one on. what is an HTTP status, or
+    LOST for a connection that breaks before the request reaches the device.
     """
 
-    def __init__(self, xml=DOCUMENT, forgets_blc_mode=False, **kwargs):
+    def __init__(self, xml=DOCUMENT, forgets_blc_mode=False, fail=None, fail_from=None, **kwargs):
         super().__init__(xml, **kwargs)
         self.forgets_blc_mode = forgets_blc_mode
+        self.fail = fail or {}
+        self.fail_from = fail_from
         self.calls = []  # (method, path)
 
     def request(self, method, url, **kwargs):
         path = urlparse(url).path
         self.calls.append((method, path))
+        what = self.fail.get(len(self.calls))
+        if what is None and self.fail_from and len(self.calls) >= self.fail_from[0]:
+            what = self.fail_from[1]
+        if what is LOST:
+            raise requests.exceptions.ConnectionError("connection lost")
+        if what:
+            return Reply(what, b"")
         if method == "GET" and path.endswith("/capabilities"):
             return Reply(200, CAPS)
         if method == "GET" and path == "/ISAPI/Image/channels":
@@ -372,8 +389,9 @@ class DeviceTest(unittest.TestCase):
         self.report = checkisapi.Report(self.lines.append)
         self.camera.calls.clear()
 
-    def write(self, path, camera=None):
+    def write(self, path, camera=None, fail=None, fail_from=None):
         self.connect(camera)
+        self.camera.fail, self.camera.fail_from = fail or {}, fail_from
         checkisapi.check_write(self.client, self.report, 1, False, self.settings, path, self.lines.append)
 
     def assert_left_as_found(self):
@@ -381,7 +399,7 @@ class DeviceTest(unittest.TestCase):
         self.assertFalse(self.report.failed, self.lines)
 
     def restores(self):
-        return [line.strip() for line in self.lines if line.startswith("   restore ")]
+        return [line.strip() for line in self.lines if line.startswith("   restore")]
 
 
 class TestWriteOnADevice(DeviceTest):
@@ -398,8 +416,8 @@ class TestWriteOnADevice(DeviceTest):
         self.assert_left_as_found()
         self.assertEqual(self.restores(), [
             "restore WDR/mode -> close: restored",
-            "restore BLC/enabled -> true, BLC/BLCMode -> AUTO: restored",
             "restore HLC/enabled -> true: restored",
+            "restore BLC/enabled -> true, BLC/BLCMode -> AUTO: restored",
         ])
         # Three writes for the change (refused, make room, accepted) and one for each restore:
         # WDR is switched off before BLC and HLC come back, so no restore is refused.
@@ -430,6 +448,55 @@ class TestWriteOnADevice(DeviceTest):
         self.assertEqual(self.restores(), [
             "restore Color/brightnessLevel -> 80: NOT RESTORED (the device now has "
             "Color/brightnessLevel=81), set it back by hand"])
+
+
+class TestWriteThatRaises(DeviceTest):
+    """Switching WDR on while BLC and HLC are on takes these requests after the first read:
+    2 and 3 the refused write, 4 to 6 pyhik switching BLC and HLC off, 7 and 8 the write again.
+    """
+
+    def test_what_pyhik_switched_off_is_put_back_when_the_write_then_raises(self):
+        for number in (7, 8):
+            with self.subTest(request=number):
+                with self.assertRaisesRegex(ISAPIConnectionError, "Cannot connect"):
+                    self.write("WDR/mode", SimCamera(forgets_blc_mode=True), fail={number: LOST})
+                self.assert_left_as_found()
+                self.assertEqual(self.restores(), [
+                    "restore HLC/enabled -> true: restored",
+                    "restore BLC/enabled -> true, BLC/BLCMode -> AUTO: restored",
+                ])
+
+    def test_nothing_is_written_when_the_write_raised_before_it_changed_anything(self):
+        with self.assertRaises(ISAPIConnectionError):
+            self.write("WDR/mode", fail={2: LOST})
+        self.assertEqual(self.camera.puts, [])
+        self.assert_left_as_found()
+        self.assertEqual(self.restores(), ["restore: nothing differs from before, nothing to put back"])
+
+    def test_a_device_that_stays_unreachable_is_reported(self):
+        with self.assertRaises(ISAPIConnectionError):
+            self.write("WDR/mode", fail_from=(7, LOST))
+        self.assertEqual(get_text(self.camera.xml, "HLC/enabled"), "false", "left switched off")
+        self.assertTrue(self.report.failed)
+        self.assertEqual(self.restores(), [
+            "restore: could not read what the device has now (ISAPIConnectionError: Cannot connect to 192.168.1.100)",
+            "restore: NOT CHECKED what else was changed before the error, compare WDR, HLC, BLC and defog "
+            "with the values listed above",
+            "restore WDR/mode -> close: NOT RESTORED (ISAPIConnectionError: Cannot connect to 192.168.1.100), "
+            "set it back by hand",
+        ])
+
+    def test_an_authentication_error_sends_nothing_more(self):
+        with self.assertRaises(ISAPIAuthError):
+            self.write("WDR/mode", fail_from=(7, 401))
+        # Request 7 was refused; the client then asked once whether Digest would be accepted.
+        self.assertEqual(len(self.camera.calls), 8)
+        self.assertTrue(self.report.failed)
+        self.assertEqual(self.restores(), [
+            "restore: NOT CHECKED what else was changed before the error, compare WDR, HLC, BLC and defog "
+            "with the values listed above",
+            "restore WDR/mode -> close: NOT TRIED after the authentication error, set it back by hand",
+        ])
 
 
 class TestRestoreSteps(unittest.TestCase):

@@ -316,8 +316,13 @@ def restore_steps(client, channel, proxy, settings, before, paths):
     return [(wanted, write) for _, wanted, write in sorted(steps.values(), key=lambda step: step[0])]
 
 
-def put_back(client, report, channel, proxy, settings, before, paths, out, skip=False):
+def put_back(client, report, channel, proxy, settings, before, paths, out, skip=False,
+             anything_else=False):
     """Put the settings at these paths back to their values in before, and check them.
+
+    Only what differs from before is written. With anything_else=True that is every
+    setting that differs, not just these paths: for a write that raised before it
+    could say what it had switched off to make room.
 
     Returns an ISAPIAuthError or None. It never raises, so it cannot hide the error that
     made the restore necessary, and one setting that cannot be put back does not stop
@@ -325,24 +330,50 @@ def put_back(client, report, channel, proxy, settings, before, paths, out, skip=
     repeated failures can lock the account. What was not put back is reported with the
     value to set by hand.
     """
-    auth_error = None
-    steps = []  # (wanted, why it is not restored or None)
-    for wanted, write in restore_steps(client, channel, proxy, settings, before, paths):
-        why = None
+    auth_error, now = None, None
+    if not skip:
+        try:
+            now = client.get_image_values(channel, proxy=proxy)
+        except ISAPIAuthError as err:
+            auth_error = err
+        except Exception as err:  # the paths are written back all the same
+            out("   restore: could not read what the device has now (%s)" % _short(err))
+    paths = list(paths)
+    if anything_else and now is not None:
+        paths += [path for path, value in before.items() if now.get(path) != value]
+    elif anything_else:
+        out("   restore: NOT CHECKED what else was changed before the error, compare WDR, HLC, BLC "
+            "and defog with the values listed above")
+        report.add("restore after the error", "FAIL",
+                   "could not see what else was changed, check WDR, HLC, BLC and defog by hand")
+
+    todo = restore_steps(client, channel, proxy, settings, before, paths)
+    if now is not None:
+        todo = [(wanted, write) for wanted, write in todo
+                if any(now.get(path) != value for path, value in wanted.items())]
+        # What is not in the document now comes back with the setting it belongs to
+        # (a level with its mode), so it is written after that one.
+        todo.sort(key=lambda step: any(path not in now for path in step[0]))
+        if not todo:
+            out("   restore: nothing differs from before, nothing to put back")
+
+    steps = []  # (wanted, what went wrong or None)
+    for wanted, write in todo:
+        problem = None
         if None in wanted.values():
-            why = "its original value is not known"
+            problem = "NOT RESTORED (its original value is not known)"
         elif skip or auth_error:
-            why = "NOT TRIED after the authentication error"
+            problem = "NOT TRIED after the authentication error"
         else:
             try:
                 result = write()
                 if not result.success:
-                    why = "refused: %s" % result.error_description
+                    problem = "NOT RESTORED (refused: %s)" % result.error_description
             except ISAPIAuthError as err:
-                auth_error, why = err, _short(err)
+                auth_error, problem = err, "NOT RESTORED (%s)" % _short(err)
             except Exception as err:  # whatever it is, the other settings are still put back
-                why = _short(err)
-        steps.append((wanted, why))
+                problem = "NOT RESTORED (%s)" % _short(err)
+        steps.append((wanted, problem))
 
     after, unread = None, ""
     if steps and not (skip or auth_error):
@@ -353,16 +384,17 @@ def put_back(client, report, channel, proxy, settings, before, paths, out, skip=
         except Exception as err:
             unread = _short(err)
 
-    for wanted, why in steps:
+    for wanted, problem in steps:
         label = ", ".join("%s -> %s" % item for item in wanted.items() if item[1] is not None) or ", ".join(wanted)
         if after is not None and all(after.get(path) == value for path, value in wanted.items()):
             out("   restore %s: restored" % label)
             continue
-        if why is None:
-            why = ("the device now has %s" % ", ".join("%s=%s" % (path, after.get(path)) for path in wanted)
-                   if after is not None else "could not read it back: %s" % unread)
-        state = "NOT TRIED" if why.startswith("NOT TRIED") else "NOT RESTORED"
-        out("   restore %s: %s (%s), set it back by hand" % (label, state, why))
+        if problem is None and after is not None:
+            problem = "NOT RESTORED (the device now has %s)" % ", ".join(
+                "%s=%s" % (path, after.get(path)) for path in wanted)
+        elif problem is None:
+            problem = "NOT CHECKED (could not read it back: %s)" % unread
+        out("   restore %s: %s, set it back by hand" % (label, problem))
         report.add("restore of " + ", ".join(wanted), "FAIL", "check it and set it back by hand: " + label)
     return auth_error
 
@@ -400,9 +432,11 @@ def check_write(client, report, channel, proxy, settings, path, out):
         raise
     finally:
         # The setting under test, and the settings the write itself reported switching
-        # off to make room (WDR, BLC, HLC and defog exclude each other).
+        # off to make room (WDR, BLC, HLC and defog exclude each other). A write that
+        # raised reported nothing, so then everything that differs is put back.
         paths = [target.path] + (list(result.also_changed) if result is not None else [])
-        auth_error = put_back(client, report, channel, proxy, settings, before, paths, out, skip=stop)
+        auth_error = put_back(client, report, channel, proxy, settings, before, paths, out,
+                              skip=stop, anything_else=result is None)
     if auth_error:
         raise auth_error
     if not path:

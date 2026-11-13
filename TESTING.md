@@ -8,8 +8,10 @@ happens. `python -m pyhik checkisapi` does the work.
 
 - Use an account that has remote configuration rights. The script never prints the
   password and stops at the first authentication error.
-- Everything that changes a value puts it back afterwards, even after an error. If it
-  could not, it says `NOT RESTORED` and tells you the value to set by hand.
+- Everything that changes a value puts it back afterwards, even after an error, and then
+  reads the device to check. If it could not, it says `NOT RESTORED` (or `NOT TRIED` after
+  an authentication error, `NOT CHECKED` when the device could not be read) and tells you
+  the value to set by hand.
 - Try a camera you do not mind experimenting. The changes are small (one brightness
   step, WDR and HLC toggled, or the one setting you pick with `--path`) but they are
   real writes.
