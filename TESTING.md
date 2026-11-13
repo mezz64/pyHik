@@ -77,6 +77,10 @@ The script prints what it changes (`path (switch): true -> false`), the result, 
 read back, and `restore ...: restored`. Use the exact path from the read-only run: an NVR
 can list settings with other names than a camera does.
 
+A select shown as `(linked to BLC/enabled)` is the mode of a feature that also has an on/off
+flag. It is changed and put back together with that flag: its off option switches the feature
+off, any other option switches it on with that mode.
+
 ### What the `--conflicts` table looks like
 
 ```

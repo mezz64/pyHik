@@ -262,37 +262,108 @@ def check_read(client, report, channel, proxy, out):
     return channel, settings
 
 
-def put_back(client, report, channel, proxy, changes, out, skip=False):
-    """Write each (path, value) back and check it. Returns an ISAPIAuthError or None.
+def current_value(setting, values):
+    """The value of a setting in values, as get_image_settings() reports it.
 
-    It never raises, so it cannot hide the error that made the restore necessary. After
-    an authentication error, or with skip=True, nothing more is sent: repeated failures
-    can lock the account. What was not put back is reported with the value to set by hand.
+    A linked select that is switched off reports its off value: a device normally leaves
+    the mode element out while the feature is off.
+    """
+    flag = setting.linked_enabled_path
+    if flag and (values.get(flag) or "").lower() != "true":
+        return setting.off_value
+    return values.get(setting.path)
+
+
+def _is_on(value):
+    return str(value).lower() not in ("false", "close")
+
+
+def restore_steps(client, channel, proxy, settings, before, paths):
+    """The writes that put these paths back to their values in before: [(wanted, write)].
+
+    wanted is the {path: value} a write puts back and write() sends it. A linked select
+    (BLC and its mode) is one write for both of its paths, through the linked setter when
+    it was on, so that the mode comes back with the flag. What was off comes first:
+    switching a setting on while one it conflicts with is still on is refused, or makes
+    pyhik switch the other one off.
+    """
+    linked = {}
+    for setting in settings:
+        if setting.linked_enabled_path:
+            linked[setting.path.lower()] = linked[setting.linked_enabled_path.lower()] = setting
+    steps = {}  # wanted paths -> (was on, wanted, write)
+    for path in paths:
+        select = linked.get(path.lower())
+        if select is None:
+            wanted = {path: before.get(path)}
+            on = _is_on(wanted[path])
+
+            def write(path=path):
+                return client.set_image_setting(path, before[path], channel, proxy=proxy)
+        else:
+            flag, mode = select.linked_enabled_path, before.get(select.path)
+            wanted = {flag: before.get(flag)}
+            if mode is not None:
+                wanted[select.path] = mode
+            on = _is_on(wanted[flag])
+            if on and mode not in (None, select.off_value):
+                def write(select=select, mode=mode):
+                    return client.set_image_linked_setting(select, mode, channel, proxy=proxy)
+            else:
+                def write(wanted=wanted):
+                    return client.put_image_settings(wanted, channel, proxy=proxy)
+        steps.setdefault(tuple(wanted), (on, wanted, write))
+    return [(wanted, write) for _, wanted, write in sorted(steps.values(), key=lambda step: step[0])]
+
+
+def put_back(client, report, channel, proxy, settings, before, paths, out, skip=False):
+    """Put the settings at these paths back to their values in before, and check them.
+
+    Returns an ISAPIAuthError or None. It never raises, so it cannot hide the error that
+    made the restore necessary, and one setting that cannot be put back does not stop
+    the others. After an authentication error, or with skip=True, nothing more is sent:
+    repeated failures can lock the account. What was not put back is reported with the
+    value to set by hand.
     """
     auth_error = None
-    for path, value in changes:
-        if value is None:
-            out("   restore %s: NOT RESTORED, its original value is not known" % path)
-            report.add("restore of " + path, "FAIL", "its original value is not known")
-            continue
-        if skip or auth_error:
-            out("   restore %s -> %s: NOT TRIED after the authentication error, set it back by hand" % (
-                path, value))
-            report.add("restore of " + path, "FAIL", "not tried after an authentication error, "
-                       "check it and set it back to %s by hand" % value)
-            continue
+    steps = []  # (wanted, why it is not restored or None)
+    for wanted, write in restore_steps(client, channel, proxy, settings, before, paths):
+        why = None
+        if None in wanted.values():
+            why = "its original value is not known"
+        elif skip or auth_error:
+            why = "NOT TRIED after the authentication error"
+        else:
+            try:
+                result = write()
+                if not result.success:
+                    why = "refused: %s" % result.error_description
+            except ISAPIAuthError as err:
+                auth_error, why = err, _short(err)
+            except Exception as err:  # whatever it is, the other settings are still put back
+                why = _short(err)
+        steps.append((wanted, why))
+
+    after, unread = None, ""
+    if steps and not (skip or auth_error):
         try:
-            back = client.set_image_setting(path, value, channel, proxy=proxy)
-            restored = back.success and client.get_image_values(channel, proxy=proxy).get(path) == value
-            why = ""
+            after = client.get_image_values(channel, proxy=proxy)
         except ISAPIAuthError as err:
-            auth_error, restored, why = err, False, " (%s)" % _describe(err)
-        except ISAPIError as err:
-            restored, why = False, " (%s)" % _describe(err)
-        out("   restore %s -> %s: %s" % (
-            path, value, "restored" if restored else "NOT RESTORED%s, set it back by hand" % why))
-        if not restored:
-            report.add("restore of " + path, "FAIL", "set it back to %s by hand" % value)
+            auth_error, unread = err, _short(err)
+        except Exception as err:
+            unread = _short(err)
+
+    for wanted, why in steps:
+        label = ", ".join("%s -> %s" % item for item in wanted.items() if item[1] is not None) or ", ".join(wanted)
+        if after is not None and all(after.get(path) == value for path, value in wanted.items()):
+            out("   restore %s: restored" % label)
+            continue
+        if why is None:
+            why = ("the device now has %s" % ", ".join("%s=%s" % (path, after.get(path)) for path in wanted)
+                   if after is not None else "could not read it back: %s" % unread)
+        state = "NOT TRIED" if why.startswith("NOT TRIED") else "NOT RESTORED"
+        out("   restore %s: %s (%s), set it back by hand" % (label, state, why))
+        report.add("restore of " + ", ".join(wanted), "FAIL", "check it and set it back by hand: " + label)
     return auth_error
 
 
@@ -310,17 +381,17 @@ def check_write(client, report, channel, proxy, settings, path, out):
     if new is None:
         report.add("write", "SKIP", "%s has no other value to try" % target.path)
         return
-    original = target.value
     before = client.get_image_values(channel, proxy=proxy)
-    out("   %s (%s): %s -> %s" % (target.path, target.type.value, original, new))
+    out("   %s (%s): %s -> %s" % (target.path, target.type.value, target.value, new))
     result = None
     stop = False
     try:
-        result = client.set_image_setting(target.path, new, channel, proxy=proxy)
+        # The linked setter writes any setting; a linked select (BLC and its mode) needs it.
+        result = client.set_image_linked_setting(target, new, channel, proxy=proxy)
         out("   result: %s" % result)
-        if getattr(result, "also_changed", None):
+        if result.also_changed:
             out("   also switched off to make room: %s" % result.also_changed)
-        got = client.get_image_values(channel, proxy=proxy).get(target.path)
+        got = current_value(target, client.get_image_values(channel, proxy=proxy))
         ok = result.success and got == new
         report.add("write", "PASS" if ok else "FAIL",
                    "read back OK" if ok else "read back %s" % got)
@@ -328,13 +399,10 @@ def check_write(client, report, channel, proxy, settings, path, out):
         stop = True  # more requests would only add failed logins
         raise
     finally:
-        # The setting under test, then the settings the write itself reported switching
+        # The setting under test, and the settings the write itself reported switching
         # off to make room (WDR, BLC, HLC and defog exclude each other).
-        changes = [(target.path, original)]
-        for other in getattr(result, "also_changed", None) or {}:
-            if other != target.path:
-                changes.append((other, before.get(other)))
-        auth_error = put_back(client, report, channel, proxy, changes, out, skip=stop)
+        paths = [target.path] + (list(result.also_changed) if result is not None else [])
+        auth_error = put_back(client, report, channel, proxy, settings, before, paths, out, skip=stop)
     if auth_error:
         raise auth_error
     if not path:

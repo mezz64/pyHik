@@ -1,13 +1,27 @@
 #!/usr/bin/env python3
 """Tests for pyhik.checkisapi, the live check run by hand against a real device."""
 
+import logging
+from pathlib import Path
+import re
 import unittest
 from unittest.mock import patch
+from urllib.parse import urlparse
 
 from pyhik import __main__ as pyhik_main
 from pyhik import checkisapi
 from pyhik.image import ImageSetting, ImageSettingType as T
 from pyhik.isapi import ISAPIAuthError, ISAPIClient, ISAPIConnectionError, ISAPIError
+from test.test_image_write import CAPS, FakeCamera, VALUES as DOCUMENT, get_text
+
+CHANNELS = (Path(__file__).parent / "fixtures" / "image_channels_list_fixed_basic-DS-2CD2385G1.xml").read_bytes()
+DEVICE_INFO = (
+    b'<DeviceInfo version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">'
+    b"<model>DS-2CD2385G1-I</model><deviceType>IPCamera</deviceType>"
+    b"<firmwareVersion>V5.6.5</firmwareVersion></DeviceInfo>"
+)
+BLC_ON = "<enabled>true</enabled>\n<BLCMode>AUTO</BLCMode>\n</BLC>"
+BLC_OFF = "<enabled>false</enabled>\n</BLC>"
 
 E503 = ISAPIError("Request failed with status 503", 503, "serviceUnavailable")
 E400 = ISAPIError("bad", 400, "badXmlContent")
@@ -136,6 +150,8 @@ class TestWrongPassword(unittest.TestCase):
 
 
 class Result:
+    error_description = "refused by the fake"
+
     def __init__(self, success=True, also_changed=None):
         self.success = success
         self.also_changed = also_changed or {}
@@ -165,6 +181,9 @@ class FakeDevice:
             also = {"HLC/enabled": "false"}
         self.values[path] = value
         return Result(True, also)
+
+    def set_image_linked_setting(self, setting, value, channel=None, proxy=False):
+        return self.set_image_setting(setting.path, value, channel, proxy)
 
 
 class DriftingDevice(FakeDevice):
@@ -298,6 +317,148 @@ class TestCheckWrite(unittest.TestCase):
                          "HLC/enabled is not tried after the authentication error")
         self.assertTrue(report.failed)
         self.assertTrue(any("NOT TRIED" in line and "HLC/enabled" in line for line in lines))
+
+
+class SimCamera(FakeCamera):
+    """The FakeCamera of the write tests, with the other documents checkisapi reads.
+
+    It stands in for the HTTP session of a real ISAPIClient, so pyhik's own conflict
+    handling runs. With forgets_blc_mode the document has no BLCMode while BLC is off, as
+    on a real camera, and BLC switched on without a mode comes on with the mode UP.
+    """
+
+    def __init__(self, xml=DOCUMENT, forgets_blc_mode=False, **kwargs):
+        super().__init__(xml, **kwargs)
+        self.forgets_blc_mode = forgets_blc_mode
+        self.calls = []  # (method, path)
+
+    def request(self, method, url, **kwargs):
+        path = urlparse(url).path
+        self.calls.append((method, path))
+        if method == "GET" and path.endswith("/capabilities"):
+            return Reply(200, CAPS)
+        if method == "GET" and path == "/ISAPI/Image/channels":
+            return Reply(200, CHANNELS)
+        if method == "GET" and path == "/ISAPI/System/deviceInfo":
+            return Reply(200, DEVICE_INFO)
+        reply = super().request(method, url, **kwargs)
+        if self.forgets_blc_mode and get_text(self.xml, "BLC/enabled") != "true":
+            self.xml = re.sub(r"<BLCMode>[^<]*</BLCMode>\n", "", self.xml)
+        elif self.forgets_blc_mode and get_text(self.xml, "BLC/BLCMode") is None:
+            self.xml = self.xml.replace("<enabled>true</enabled>\n</BLC>", BLC_ON.replace("AUTO", "UP"))
+        return reply
+
+    def get(self, url, **kwargs):
+        return self.request("GET", url, **kwargs)
+
+
+class DeviceTest(unittest.TestCase):
+    """Runs a check with a real ISAPIClient against a SimCamera."""
+
+    def setUp(self):
+        # pyhik logs what the device refuses; that is not test output.
+        quiet = logging.NullHandler()
+        logging.getLogger("pyhik").addHandler(quiet)
+        self.addCleanup(logging.getLogger("pyhik").removeHandler, quiet)
+
+    def connect(self, camera=None):
+        self.camera = camera or SimCamera()
+        self.client = ISAPIClient("192.168.1.100", username="admin", password="pw")
+        self.client._auth = object()  # the way to log in is already known
+        self.client._session = self.camera
+        self.settings = self.client.get_image_settings(1)
+        self.found = self.camera.xml
+        self.lines = []
+        self.report = checkisapi.Report(self.lines.append)
+        self.camera.calls.clear()
+
+    def write(self, path, camera=None):
+        self.connect(camera)
+        checkisapi.check_write(self.client, self.report, 1, False, self.settings, path, self.lines.append)
+
+    def assert_left_as_found(self):
+        self.assertEqual(self.camera.xml, self.found)
+        self.assertFalse(self.report.failed, self.lines)
+
+    def restores(self):
+        return [line.strip() for line in self.lines if line.startswith("   restore ")]
+
+
+class TestWriteOnADevice(DeviceTest):
+    def test_a_number(self):
+        self.write(None)
+        self.assertEqual([get_text(body, "Color/brightnessLevel") for _, body in self.camera.puts], ["81", "80"])
+        self.assert_left_as_found()
+        self.assertEqual(self.restores(), ["restore Color/brightnessLevel -> 80: restored"])
+
+    def test_what_made_room_comes_back_with_its_mode(self):
+        # WDR cannot be switched on while BLC and HLC are on, so pyhik switches both off.
+        self.write("WDR/mode", SimCamera(forgets_blc_mode=True))
+        self.assertIn("   also switched off to make room: {'BLC/enabled': 'false', 'HLC/enabled': 'false'}", self.lines)
+        self.assert_left_as_found()
+        self.assertEqual(self.restores(), [
+            "restore WDR/mode -> close: restored",
+            "restore BLC/enabled -> true, BLC/BLCMode -> AUTO: restored",
+            "restore HLC/enabled -> true: restored",
+        ])
+        # Three writes for the change (refused, make room, accepted) and one for each restore:
+        # WDR is switched off before BLC and HLC come back, so no restore is refused.
+        self.assertEqual(len(self.camera.puts), 6)
+
+    def test_a_linked_select_is_switched_off_and_back_on(self):
+        self.write("BLC/BLCMode", SimCamera(forgets_blc_mode=True))
+        self.assertIn("   BLC/BLCMode (select): AUTO -> CLOSE", self.lines)
+        self.assertEqual(self.report.results[0], ("write", "PASS", "read back OK"))
+        self.assert_left_as_found()
+
+    def test_a_linked_select_is_switched_on_and_back_off(self):
+        self.write("BLC/BLCMode", SimCamera(DOCUMENT.replace(BLC_ON, BLC_OFF), forgets_blc_mode=True))
+        self.assertIn("   BLC/BLCMode (select): CLOSE -> UP", self.lines)
+        self.assertEqual(self.report.results[0], ("write", "PASS", "read back OK"))
+        self.assert_left_as_found()
+        self.assertEqual(self.restores(), ["restore BLC/enabled -> false: restored"])
+
+    def test_a_restore_the_device_accepts_but_does_not_apply_is_reported(self):
+        class KeepsBrightness(SimCamera):
+            def request(self, method, url, **kwargs):
+                if method == "PUT" and self.puts:
+                    kwargs["data"] = self.xml.encode()
+                return super().request(method, url, **kwargs)
+
+        self.write(None, KeepsBrightness())
+        self.assertTrue(self.report.failed)
+        self.assertEqual(self.restores(), [
+            "restore Color/brightnessLevel -> 80: NOT RESTORED (the device now has "
+            "Color/brightnessLevel=81), set it back by hand"])
+
+
+class TestRestoreSteps(unittest.TestCase):
+    def steps(self, before, paths):
+        client = unittest.mock.Mock()
+        settings = [ImageSetting("BLC/BLCMode", T.SELECT, options=["CLOSE", "UP", "AUTO"], value="AUTO",
+                                 linked_enabled_path="BLC/enabled", off_value="CLOSE")]
+        steps = checkisapi.restore_steps(client, 1, False, settings, before, paths)
+        for _, write in steps:
+            write()
+        return [wanted for wanted, _ in steps], client.mock_calls
+
+    def test_what_was_off_comes_first_and_a_linked_pair_is_one_write(self):
+        before = {"WDR/mode": "open", "HLC/enabled": "false", "BLC/enabled": "true", "BLC/BLCMode": "AUTO",
+                  "Dehaze/DehazeMode": "close"}
+        wanted, calls = self.steps(before, ["WDR/mode", "BLC/BLCMode", "HLC/enabled", "BLC/enabled", "Dehaze/DehazeMode"])
+        self.assertEqual(wanted, [{"HLC/enabled": "false"}, {"Dehaze/DehazeMode": "close"},
+                                  {"WDR/mode": "open"}, {"BLC/enabled": "true", "BLC/BLCMode": "AUTO"}])
+        self.assertEqual([call[0] for call in calls], ["set_image_setting", "set_image_setting",
+                                                       "set_image_setting", "set_image_linked_setting"])
+        self.assertEqual(calls[-1].args[1], "AUTO")
+
+    def test_a_linked_select_that_was_off_gets_its_exact_values_back(self):
+        for before in ({"BLC/enabled": "false"}, {"BLC/enabled": "false", "BLC/BLCMode": "UP"},
+                       {"BLC/enabled": "true", "BLC/BLCMode": "CLOSE"}, {"BLC/enabled": "true"}):
+            with self.subTest(before):
+                wanted, calls = self.steps(before, ["BLC/enabled"])
+                self.assertEqual(wanted, [before])
+                self.assertEqual(calls, [unittest.mock.call.put_image_settings(before, 1, proxy=False)])
 
 
 class TestOtherValue(unittest.TestCase):
