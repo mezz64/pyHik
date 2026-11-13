@@ -499,6 +499,118 @@ class TestWriteThatRaises(DeviceTest):
         ])
 
 
+def document(wdr="close", blc=True, hlc=True):
+    """The camera's document with WDR, BLC and HLC as given (as shipped: BLC and HLC are on)."""
+    xml = DOCUMENT if blc else DOCUMENT.replace(BLC_ON, BLC_OFF)
+    if not hlc:
+        xml = xml.replace("<enabled>true</enabled>\n<HLCLevel>", "<enabled>false</enabled>\n<HLCLevel>")
+    return xml.replace("<mode>close</mode>\n<WDRLevel>", "<mode>%s</mode>\n<WDRLevel>" % wdr)
+
+
+class TestConflictsOnADevice(DeviceTest):
+    """With BLC and HLC on to begin with, the check sends 123 requests to this camera: 1 to
+    119 fill the table, then the restore reads (120), writes BLC back (121, 122) and checks (123).
+    """
+
+    def conflicts(self, camera=None, fail=None, fail_from=None):
+        self.connect(camera or SimCamera(forgets_blc_mode=True))
+        self.camera.fail, self.camera.fail_from = fail or {}, fail_from
+        checkisapi.check_conflicts(self.client, self.report, 1, False, self.settings, self.lines.append)
+
+    def test_every_pair_is_tried_and_the_device_is_left_as_found(self):
+        self.conflicts()
+        self.assert_left_as_found()
+        self.assertEqual(self.report.results, [
+            ("conflicts", "PASS", "8 cases: 2 fine, 6 resolved by switching the other off, 0 refused")])
+        self.assertIn("   BLC on, then WDR=open: BLC was switched off (by pyhik: BLC/enabled) after MutexWithWDR",
+                      self.lines)
+        # The last case left only the BLC mode different from before.
+        self.assertEqual(self.restores(), ["restore BLC/enabled -> true, BLC/BLCMode -> AUTO: restored"])
+
+    def test_whatever_was_on_before_is_on_again(self):
+        for wdr, blc, hlc in (("open", False, False), ("auto", False, False), ("close", False, False),
+                              ("close", True, False), ("close", False, True)):
+            with self.subTest(wdr=wdr, blc=blc, hlc=hlc):
+                self.conflicts(SimCamera(document(wdr, blc, hlc), forgets_blc_mode=True))
+                self.assert_left_as_found()
+
+    def test_an_authentication_error_sends_nothing_more(self):
+        for number in (2, 30, 77, 119):
+            with self.subTest(request=number):
+                with self.assertRaisesRegex(ISAPIAuthError, "Invalid credentials"):
+                    self.conflicts(fail_from=(number, 401))
+                # The refused request, then the client asking once whether Digest would be accepted.
+                self.assertEqual(len(self.camera.calls), number + 1)
+                self.assertTrue(self.report.failed)
+                self.assertEqual(self.restores(), [
+                    "restore WDR/mode -> close: NOT TRIED after the authentication error, set it back by hand",
+                    "restore HLC/enabled -> true: NOT TRIED after the authentication error, set it back by hand",
+                    "restore BLC/enabled -> true, BLC/BLCMode -> AUTO: NOT TRIED after the authentication error, "
+                    "set it back by hand",
+                ])
+
+    def test_an_error_does_not_stop_the_restore(self):
+        for number in (2, 30, 77, 119):
+            with self.subTest(request=number):
+                with self.assertRaises(ISAPIConnectionError):
+                    self.conflicts(fail={number: LOST})
+                self.assert_left_as_found()
+
+    # In the next three, read 31 fails in the middle of the table with HLC and BLC switched
+    # off. The restore then reads (32), writes HLC (33, 34) and BLC (35, 36) back and checks (37).
+
+    def test_a_setting_that_cannot_be_put_back_does_not_stop_the_others(self):
+        with self.assertRaisesRegex(ISAPIError, "status 503"):
+            self.conflicts(fail={31: 503, 33: LOST})
+        self.assertEqual(self.restores(), [
+            "restore HLC/enabled -> true: NOT RESTORED (ISAPIConnectionError: Cannot connect to 192.168.1.100), "
+            "set it back by hand",
+            "restore BLC/enabled -> true, BLC/BLCMode -> AUTO: restored",
+        ])
+        self.assertEqual(self.report.results, [
+            ("restore of HLC/enabled", "FAIL", "check it and set it back by hand: HLC/enabled -> true")])
+
+    def test_a_restore_the_device_refuses_is_reported(self):
+        with self.assertRaisesRegex(ISAPIError, "status 503"):
+            self.conflicts(fail={31: 503, 36: 500})
+        self.assertEqual(self.restores(), [
+            "restore HLC/enabled -> true: restored",
+            "restore BLC/enabled -> true, BLC/BLCMode -> AUTO: NOT RESTORED (refused: invalidResponse), "
+            "set it back by hand",
+        ])
+
+    def test_an_authentication_error_while_restoring_stops_the_restore(self):
+        with self.assertRaisesRegex(ISAPIError, "status 503"):
+            self.conflicts(fail={31: 503}, fail_from=(34, 401))
+        self.assertEqual(len(self.camera.calls), 35)
+        self.assertEqual(self.restores(), [
+            "restore HLC/enabled -> true: NOT RESTORED (ISAPIAuthError: Invalid credentials, status=401), "
+            "set it back by hand",
+            "restore BLC/enabled -> true, BLC/BLCMode -> AUTO: NOT TRIED after the authentication error, "
+            "set it back by hand",
+        ])
+
+    def test_an_authentication_error_at_the_end_of_the_restore_stops_the_run(self):
+        with self.assertRaises(ISAPIAuthError):
+            self.conflicts(fail_from=(123, 401))
+        self.assertEqual(self.restores(), [
+            "restore BLC/enabled -> true, BLC/BLCMode -> AUTO: NOT CHECKED (could not read it back: "
+            "ISAPIAuthError: Invalid credentials, status=401), set it back by hand"])
+
+    def test_a_device_that_stays_unreachable_is_reported(self):
+        with self.assertRaises(ISAPIConnectionError):
+            self.conflicts(fail_from=(30, LOST))
+        self.assertTrue(self.report.failed)
+        self.assertEqual(len([line for line in self.restores() if "NOT RESTORED" in line]), 3)
+
+    def test_fewer_than_two_features_is_skipped(self):
+        self.connect()
+        settings = [s for s in self.settings if s.path in ("WDR/mode", "Color/brightnessLevel")]
+        checkisapi.check_conflicts(self.client, self.report, 1, False, settings, self.lines.append)
+        self.assertEqual(self.camera.calls, [])
+        self.assertEqual(self.report.results[0][:2], ("conflicts", "SKIP"))
+
+
 class TestRestoreSteps(unittest.TestCase):
     def steps(self, before, paths):
         client = unittest.mock.Mock()

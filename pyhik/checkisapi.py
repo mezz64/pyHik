@@ -446,13 +446,12 @@ def check_write(client, report, channel, proxy, settings, path, out):
 class Feature:
     """A setting that can be on or off and may exclude others (WDR, HLC, BLC, defog)."""
 
-    def __init__(self, name, variants, off, is_on, restore_on, paths):
+    def __init__(self, name, variants, off, is_on, paths):
         self.name = name
         self.variants = variants  # [(label, apply)] ways to turn it on; apply() -> result
         self.off = off  # () -> result
         self.is_on = is_on  # (values) -> bool
-        self.restore_on = restore_on  # (values before) -> result, puts the old "on" state back
-        self.paths = paths
+        self.paths = paths  # what put_back() restores at the end
 
 
 def build_features(client, channel, proxy, settings):
@@ -476,7 +475,6 @@ def build_features(client, channel, proxy, settings):
             [("%s=%s" % (name, o), put(setting.path, o)) for o in on_options],
             put(setting.path, "close"),
             lambda v, p=setting.path: v.get(p) not in (None, "close"),
-            lambda v, p=setting.path: put(p, v[p])(),
             [setting.path],
         ))
 
@@ -487,8 +485,7 @@ def build_features(client, channel, proxy, settings):
     if hlc is not None:
         features.append(Feature(
             "HLC", [("HLC", put(hlc.path, "true"))], put(hlc.path, "false"),
-            lambda v, p=hlc.path: v.get(p) == "true",
-            lambda v, p=hlc.path: put(p, "true")(), [hlc.path],
+            lambda v, p=hlc.path: v.get(p) == "true", [hlc.path],
         ))
 
     blc = by_path.get("blc/blcmode")
@@ -503,7 +500,6 @@ def build_features(client, channel, proxy, settings):
             features.append(Feature(
                 "BLC", [("BLC=%s" % mode, lambda: blc_set(mode))], lambda: blc_set(blc.off_value),
                 lambda v, e=blc.linked_enabled_path: v.get(e) == "true",
-                lambda v, b=blc: blc_set(v.get(b.path) or mode),
                 [blc.path, blc.linked_enabled_path],
             ))
     return features
@@ -544,6 +540,7 @@ def check_conflicts(client, report, channel, proxy, settings, out):
 
     columns = [(f, label, apply) for f in features for label, apply in f.variants]
     cells = {}  # (row feature name, column label) -> (symbol, detail)
+    stop = False
     try:
         for row in features:
             for feature, label, apply in columns:
@@ -573,20 +570,16 @@ def check_conflicts(client, report, channel, proxy, settings, out):
                 else:
                     cells[(row.name, label)] = ("X", "refused: %s" % (
                         result.sub_status if not seen else "%s (%s)" % (result.sub_status, seen)))
+    except ISAPIAuthError:
+        stop = True  # more requests would only add failed logins
+        raise
     finally:
         logger.removeHandler(codes)
         logger.setLevel(old_level)
-        for f in features:
-            f.off()
-        for f in features:
-            if f.is_on(before):
-                f.restore_on(before)
-        after = read()
-        restored = all(after.get(p) == before.get(p) for f in features for p in f.paths)
-        out("   restore: %s" % ("restored" if restored else "NOT RESTORED, put these back by hand: " + ", ".join(
-            "%s=%s" % (p, before.get(p)) for f in features for p in f.paths if after.get(p) != before.get(p))))
-        if not restored:
-            report.add("restore of conflict settings", "FAIL", "see above")
+        auth_error = put_back(client, report, channel, proxy, settings, before,
+                              [p for f in features for p in f.paths], out, skip=stop)
+    if auth_error:
+        raise auth_error
 
     width = max(len(label) for _, label, _ in columns) + 2
     out("")
