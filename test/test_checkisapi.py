@@ -337,8 +337,9 @@ class SimCamera(FakeCamera):
     LOST for a connection that breaks before the request reaches the device.
     """
 
-    def __init__(self, xml=DOCUMENT, forgets_blc_mode=False, fail=None, fail_from=None, **kwargs):
+    def __init__(self, xml=DOCUMENT, forgets_blc_mode=False, fail=None, fail_from=None, caps=CAPS, **kwargs):
         super().__init__(xml, **kwargs)
+        self.caps = caps
         self.forgets_blc_mode = forgets_blc_mode
         self.fail = fail or {}
         self.fail_from = fail_from
@@ -355,7 +356,7 @@ class SimCamera(FakeCamera):
         if what:
             return Reply(what, b"")
         if method == "GET" and path.endswith("/capabilities"):
-            return Reply(200, CAPS)
+            return Reply(200, self.caps)
         if method == "GET" and path == "/ISAPI/Image/channels":
             return Reply(200, CHANNELS)
         if method == "GET" and path == "/ISAPI/System/deviceInfo":
@@ -570,6 +571,26 @@ class TestConflictsOnADevice(DeviceTest):
             "restore HLC/enabled -> true: restored",
             "restore BLC/enabled -> true, BLC/BLCMode -> AUTO: restored",
         ])
+
+    def test_blc_that_is_a_plain_switch_is_in_the_table(self):
+        # No off option in the mode list, so pyhik does not link the mode to the flag.
+        self.conflicts(SimCamera(caps=CAPS.replace(b"CLOSE,UP,", b"UP,")))
+        self.assertIn("   before: WDR/mode=close, HLC/enabled=true, BLC/enabled=true", self.lines)
+        self.assertIn("   BLC on, then WDR=open: BLC was switched off (by pyhik: BLC/enabled) after MutexWithWDR",
+                      self.lines)
+        self.assertEqual(self.report.results[-1][2], "8 cases: 2 fine, 6 resolved by switching the other off, 0 refused")
+        self.assert_left_as_found()
+
+    def test_hlc_that_is_a_linked_select_is_in_the_table(self):
+        caps = CAPS.replace(b"<HLCLevel min", b'<HLCMode opt="close,open">open</HLCMode>\n<HLCLevel min')
+        xml = DOCUMENT.replace("<HLCLevel>", "<HLCMode>open</HLCMode>\n<HLCLevel>")
+        self.conflicts(SimCamera(xml, caps=caps))
+        self.assertIn("   before: WDR/mode=close, HLC/HLCMode=open, HLC/enabled=true, BLC/BLCMode=AUTO, "
+                      "BLC/enabled=true", self.lines)
+        self.assertIn("   HLC on, then WDR=open: HLC was switched off (by pyhik: HLC/enabled) after MutexWithWDR",
+                      self.lines)
+        self.assertEqual(self.report.results[-1][2], "8 cases: 2 fine, 6 resolved by switching the other off, 0 refused")
+        self.assert_left_as_found()
 
     def test_an_error_does_not_stop_the_restore(self):
         for number in (2, 30, 77, 119):

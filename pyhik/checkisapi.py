@@ -488,30 +488,34 @@ def build_features(client, channel, proxy, settings):
             [setting.path],
         ))
 
+    def flag_feature(name, mode_path, flag_path):
+        # HLC and BLC have an enabled flag. Where the device also has a mode with an off
+        # option, pyhik reports the two as one linked select; otherwise the flag is a switch.
+        select = by_path.get(mode_path)
+        if select is not None and select.linked_enabled_path and select.off_value is not None:
+            modes = [o for o in select.options if o != select.off_value]
+            mode = next((o for o in modes if o.lower() in ("auto", "center")), modes[0] if modes else None)
+            if mode is not None:
+                def set_mode(value):
+                    return client.set_image_linked_setting(select, value, channel, proxy=proxy)
+
+                features.append(Feature(
+                    name, [("%s=%s" % (name, mode), lambda: set_mode(mode))], lambda: set_mode(select.off_value),
+                    lambda v: v.get(select.linked_enabled_path) == "true",
+                    [select.path, select.linked_enabled_path],
+                ))
+                return
+        switch = by_path.get(flag_path)
+        if switch is not None and switch.type is ImageSettingType.SWITCH:
+            features.append(Feature(
+                name, [(name, put(switch.path, "true"))], put(switch.path, "false"),
+                lambda v: v.get(switch.path) == "true", [switch.path],
+            ))
+
     mode_feature("WDR", "wdr/mode")
     mode_feature("defog", "dehaze/dehazemode")
-
-    hlc = by_path.get("hlc/enabled")
-    if hlc is not None:
-        features.append(Feature(
-            "HLC", [("HLC", put(hlc.path, "true"))], put(hlc.path, "false"),
-            lambda v, p=hlc.path: v.get(p) == "true", [hlc.path],
-        ))
-
-    blc = by_path.get("blc/blcmode")
-    if blc is not None and blc.linked_enabled_path and blc.off_value is not None:
-        modes = [o for o in blc.options if o != blc.off_value]
-        preferred = next((o for o in modes if o.lower() in ("auto", "center")), None)
-        mode = preferred or (modes[0] if modes else None)
-        if mode is not None:
-            def blc_set(value, blc=blc):
-                return client.set_image_linked_setting(blc, value, channel, proxy=proxy)
-
-            features.append(Feature(
-                "BLC", [("BLC=%s" % mode, lambda: blc_set(mode))], lambda: blc_set(blc.off_value),
-                lambda v, e=blc.linked_enabled_path: v.get(e) == "true",
-                [blc.path, blc.linked_enabled_path],
-            ))
+    flag_feature("HLC", "hlc/hlcmode", "hlc/enabled")
+    flag_feature("BLC", "blc/blcmode", "blc/enabled")
     return features
 
 
