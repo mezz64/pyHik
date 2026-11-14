@@ -453,8 +453,12 @@ def check_write(client, report, channel, proxy, settings, path, out):
             out("   also switched off to make room: %s" % result.also_changed)
         got = current_value(target, client.get_image_values(channel, proxy=proxy))
         ok = result.success and got == new
-        report.add("write", "PASS" if ok else "FAIL",
-                   "read back OK" if ok else "read back %s" % got)
+        if ok:
+            report.add("write", "PASS", "read back OK")
+        elif result.success:
+            report.add("write", "FAIL", "accepted, but read back %s" % got)
+        else:
+            report.add("write", "FAIL", "refused: %s" % result.error_description)
     except ISAPIAuthError:
         stop = True  # more requests would only add failed logins
         raise
@@ -568,7 +572,8 @@ def check_conflicts(client, report, channel, proxy, settings, out):
     logger = logging.getLogger("pyhik")
     old_level = logger.level
     logger.addHandler(codes)
-    logger.setLevel(min(old_level or logging.INFO, logging.INFO))
+    if logger.getEffectiveLevel() > logging.INFO:
+        logger.setLevel(logging.INFO)  # the codes are logged at INFO; with -v the level is lower already
 
     columns = [(f, label, apply) for f in features for label, apply in f.variants]
     cells = {}  # (row feature name, column label) -> (symbol, detail)
@@ -587,8 +592,11 @@ def check_conflicts(client, report, channel, proxy, settings, out):
                 if feature is row:
                     cells[(row.name, label)] = ("-", "")
                     continue
-                for f in features:  # known starting point: everything off
-                    tracked(f.off)
+                # Known starting point: everything off.
+                still_on = [f.name for f in features if not tracked(f.off).success]
+                if still_on:
+                    cells[(row.name, label)] = ("?", "could not switch %s off first" % ", ".join(still_on))
+                    continue
                 first = row.variants[0]
                 setup = tracked(first[1])
                 if not setup.success:
@@ -644,9 +652,12 @@ def check_conflicts(client, report, channel, proxy, settings, out):
     resolved = sum(1 for v in tried if v[0] == ">")
     summary = "%d cases: %d fine, %d resolved by switching the other off, %d refused" % (
         len(tried), sum(1 for v in tried if v[0] == "="), resolved, len(refused))
+    untried = sum(1 for v in tried if v[0] == "?")
+    if untried:
+        summary += ", %d could not be tried" % untried
     for r, c in refused:
         report.add("conflict: %s on, then %s" % (r, c), "FAIL", cells[(r, c)][1])
-    report.add("conflicts", "FAIL" if refused else "PASS", summary)
+    report.add("conflicts", "FAIL" if refused else "SKIP" if untried == len(tried) else "PASS", summary)
 
 
 def check_bad_password(report, out, overrides=None):
@@ -672,10 +683,7 @@ def check_bad_password(report, out, overrides=None):
 
     url = ("https" if cfg["ssl"] else "http") + "://" + cfg["host"]
     camera = HikCamera(url, cfg["port"], cfg["username"], cfg["password"], cfg["verify_ssl"])
-    if not hasattr(camera, "auth_failed"):
-        report.add("wrong password (HikCamera.auth_failed)", "SKIP",
-                   "this pyhik has no auth_failed (pyHik PR 6)")
-    elif camera.get_id is None and camera.auth_failed:
+    if camera.get_id is None and camera.auth_failed:
         report.add("wrong password (HikCamera.auth_failed)", "PASS")
     else:
         report.add("wrong password (HikCamera.auth_failed)", "FAIL",
@@ -751,7 +759,7 @@ def run(client, channel=None, proxy=None, write=False, path=None, conflicts=Fals
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m pyhik checkisapi", description=__doc__.split("\n")[0])
     parser.add_argument("--host", help="host name or IP address (default: CAMERA_HOST)")
-    parser.add_argument("--port", type=int, help="port (default: CAMERA_PORT, else 80)")
+    parser.add_argument("--port", type=int, help="port (default: CAMERA_PORT, else 80, or 443 with HTTPS)")
     parser.add_argument("--username", help="user name (default: CAMERA_USERNAME, else admin)")
     parser.add_argument("--ssl", action="store_true",
                         help="use HTTPS, on port 443 unless --port says otherwise (default: CAMERA_SSL)")
@@ -771,6 +779,8 @@ def main(argv=None):
     parser.add_argument("--all", action="store_true", help="--write --conflicts --bad-password")
     parser.add_argument("-v", "--verbose", action="store_true", help="show pyhik's debug log")
     args = parser.parse_args(argv)
+    if args.path and not (args.write or args.all):
+        parser.error("--path names the setting that --write changes; add --write")
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG, format="      [%(name)s] %(message)s")
         logging.getLogger("urllib3").setLevel(logging.WARNING)
@@ -785,8 +795,10 @@ def main(argv=None):
         print("authentication/permission problem, stopping: " + _describe(err))
     except ISAPINotSupportedError as err:
         print("not supported by this device: " + _describe(err))
-    except (ISAPIConnectionError, ISAPIError) as err:
+    except ISAPIError as err:
         print("request failed: " + _describe(err))
+    finally:
+        client.close()
     return 2
 
 

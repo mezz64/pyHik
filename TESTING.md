@@ -12,7 +12,7 @@ happens. `python -m pyhik checkisapi` does the work.
   reads the device to check. If it could not, it says `NOT RESTORED` (or `NOT TRIED` after
   an authentication error, `NOT CHECKED` when the device could not be read) and tells you
   the value to set by hand.
-- Try a camera you do not mind experimenting. The changes are small (one brightness
+- Try a camera you do not mind experimenting on. The changes are small (one brightness
   step, WDR and HLC toggled, or the one setting you pick with `--path`) but they are
   real writes.
 
@@ -34,17 +34,17 @@ export CAMERA_PASSWORD='passwd123'
 ## Optional Environment Variables
 
 ```bash
-export CAMERA_PORT=80      # Custom port (default: 80; 443 enables HTTPS)
-export CAMERA_SSL=1        # Enable SSL/HTTPS
+export CAMERA_PORT=8080    # Custom port (default: 80, or 443 with CAMERA_SSL=1)
+export CAMERA_SSL=1        # Use HTTPS. The port alone does not: with port 443, set this too
 export CAMERA_VERIFY_SSL=0 # Disable SSL cert verification
 ```
 
 You may also use arguments:
 
 * `--host IP/hostname` (`CAMERA_HOST=...`)
-* `--username admin `  (`CAMERA_USERNAME=...`)
-* `--port 443`         (`CAMERA_PORT=...`)
-* `--ssl`              (`CAMERA_SSL=1`)
+* `--username admin`   (`CAMERA_USERNAME=...`)
+* `--port 8080`        (`CAMERA_PORT=...`)
+* `--ssl`              (`CAMERA_SSL=1`; HTTPS, on port 443 unless a port is given)
 * `--no-verify`        (`CAMERA_VERIFY_SSL=0`)
 
 ## What to run
@@ -59,7 +59,7 @@ You may also use arguments:
 | add `--proxy` / `--no-proxy` | force the NVR (ImageProxy) or the camera endpoints. Normally not needed: the script uses the NVR endpoints for an NVR or DVR, and for any device whose camera image endpoints fail while the NVR endpoints work | as above |
 | add `--channel N` | use channel ID N instead of the first listed | as above |
 | add `--path Some/path` | with `--write`, change this setting instead of brightness. Take the path from the list the read-only run prints (a plain `--write` also suggests a few switch and select paths). A number moves one step, a switch flips (true to false or false to true), a select takes the first option that is not the current one. Always put back afterwards | as above |
-| add `-v` | print pyhik's debug log, which shows the retries and conflict handling | |
+| add `-v` | print pyhik's debug log, which shows every retry and how a conflict is resolved, during `--conflicts` too | |
 
 Each check ends with `PASS`, `FAIL` or `SKIP` and the run ends with a summary. The exit
 code is 0 when nothing failed, 1 when a check failed and 2 when the device could not be
@@ -104,11 +104,12 @@ Read it as "with the row on, turn the column on". `>` is the normal result on a 
 has the conflict: the device refused with the code shown, pyhik switched the other setting off
 and the change went through. `=` means this device allows both. `X` is a failure: the device
 refused and pyhik did not know how to resolve it. That is the case to report, with the code
-shown. The cases depend on which of WDR, HLC, BLC and defog your device offers; with fewer
-than two the check is skipped. The camera's original values are put back at the end
-(`restore ...: restored` for each setting that the last case left different). That
-includes a setting pyhik switched off by itself to make room, even one that is not in
-the table.
+shown. `?` means the case could not be set up, because the device refused to switch one of
+the settings on or off beforehand; the line under the table says which. The cases depend on
+which of WDR, HLC, BLC and defog your device offers; with fewer than two the check is skipped.
+The camera's original values are put back at the end (`restore ...: restored` for each setting
+that the last case left different). That includes a setting pyhik switched off by itself to
+make room, even one that is not in the table.
 
 After a restore, the script compares everything else with what it read at the start. If
 a setting it did not change is different now, it prints a `note: also different from
@@ -122,7 +123,7 @@ whose camera endpoints fail while the NVR endpoints work), lists the attached ca
 endpoints. It prints `proxy endpoints: yes ...` with the reason, so you can see what it chose.
 `--write` and `--conflicts` act on the first channel, or on the one given with `--channel`,
 so you can test one camera behind the NVR at a time. Run the read-only check first.
-If you report an issue, include if the NVR is a Hikvision or a re-branded one.
+If you report an issue, say whether the NVR is a Hikvision or a rebranded one.
 
 ### When the device information cannot be read
 

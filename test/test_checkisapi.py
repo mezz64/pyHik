@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import requests
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from urllib.parse import urlparse
 
 from pyhik import __main__ as pyhik_main
@@ -287,6 +287,25 @@ class TestCheckWrite(unittest.TestCase):
         report = checkisapi.Report(lambda line: None)
         checkisapi.check_write(device, report, 1, False, [stuck, absent] + SETTINGS[1:], None, lambda line: None)
         self.assertEqual(device.sets, [("Color/contrastLevel", "99"), ("Color/contrastLevel", "100")])
+
+    def test_a_refused_write_says_why(self):
+        class Refuses(FakeDevice):
+            def set_image_setting(self, path, value, channel=None, proxy=False):
+                self.sets.append((path, value))
+                return Result(False)
+
+        device, report, lines = self.write(None, Refuses(VALUES))
+        self.assertEqual(report.results, [("write", "FAIL", "refused: refused by the fake")])
+        self.assertEqual(device.sets, [("Color/brightnessLevel", "51")], "nothing changed, nothing to put back")
+
+    def test_a_write_that_does_not_take_says_what_was_read_back(self):
+        class Ignores(FakeDevice):
+            def set_image_setting(self, path, value, channel=None, proxy=False):
+                self.sets.append((path, value))
+                return Result(True)
+
+        _, report, _ = self.write(None, Ignores(VALUES))
+        self.assertEqual(report.results, [("write", "FAIL", "accepted, but read back 50")])
 
     def test_failed_restore_is_reported(self):
         _, report, lines = self.write(None, FakeDevice(VALUES, fail_restore=True))
@@ -599,6 +618,44 @@ class TestConflictsOnADevice(DeviceTest):
             "restore BLC/enabled -> true, BLC/BLCMode -> AUTO: restored",
         ])
 
+    def test_the_log_level_is_only_lowered_as_far_as_needed(self):
+        class NotesTheLevel(SimCamera):
+            levels = set()
+
+            def request(self, method, url, **kwargs):
+                self.levels.add(logging.getLogger("pyhik.isapi").getEffectiveLevel())
+                return super().request(method, url, **kwargs)
+
+        root, package = logging.getLogger(), logging.getLogger("pyhik")
+        self.addCleanup(root.setLevel, root.level)
+        for level, during in ((logging.WARNING, logging.INFO), (logging.DEBUG, logging.DEBUG)):  # without and with -v
+            with self.subTest(level=level):
+                root.setLevel(level)
+                NotesTheLevel.levels = set()
+                self.conflicts(NotesTheLevel())
+                # The first request is sent before the check listens to the log.
+                self.assertEqual(NotesTheLevel.levels, {level, during})
+                self.assertEqual(package.level, logging.NOTSET)
+                self.assertIn("   HLC on, then WDR=open: HLC was switched off (by pyhik: HLC/enabled) after MutexWithWDR",
+                              self.lines)
+
+    def test_a_case_that_cannot_start_from_everything_off_is_not_tried(self):
+        class WdrStaysOn(SimCamera):
+            def request(self, method, url, **kwargs):
+                data = kwargs.get("data")
+                if method == "PUT" and get_text(self.xml, "WDR/mode") != "close" \
+                        and get_text(data.decode(), "WDR/mode") == "close":
+                    self.calls.append((method, urlparse(url).path))
+                    return Reply(500, b"")
+                return super().request(method, url, **kwargs)
+
+        self.conflicts(WdrStaysOn(document("open", False, False)))
+        self.assertIn("   HLC on, then BLC=CENTER: could not switch WDR off first", self.lines)
+        self.assertEqual(self.report.results, [(
+            "conflicts", "SKIP", "8 cases: 0 fine, 0 resolved by switching the other off, 0 refused, "
+            "8 could not be tried")])
+        self.assertEqual(self.restores(), ["restore: nothing differs from before, nothing to put back"])
+
     def test_blc_that_is_a_plain_switch_is_in_the_table(self):
         # No off option in the mode list, so pyhik does not link the mode to the flag.
         self.conflicts(SimCamera(caps=CAPS.replace(b"CLOSE,UP,", b"UP,")))
@@ -823,7 +880,7 @@ class TestMain(unittest.TestCase):
         self.assertIn("--host", str(raised.exception))
 
     def test_host_port_and_username_reach_the_client_and_the_checks(self):
-        with patch.object(checkisapi, "client_from_env", return_value="client") as client, \
+        with patch.object(checkisapi, "client_from_env") as client, \
                 patch.object(checkisapi, "run", return_value=0) as run:
             self.assertEqual(checkisapi.main(["--host", "h", "--port", "81", "--username", "u", "--bad-password"]), 0)
         expected = {"host": "h", "port": 81, "username": "u", "ssl": None, "verify_ssl": None}
@@ -831,7 +888,7 @@ class TestMain(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["overrides"], expected)
 
     def test_ssl_and_no_verify_reach_the_client_and_the_checks(self):
-        with patch.object(checkisapi, "client_from_env", return_value="client") as client, \
+        with patch.object(checkisapi, "client_from_env") as client, \
                 patch.object(checkisapi, "run", return_value=0) as run:
             checkisapi.main(["--ssl", "--no-verify"])
         expected = {"host": None, "port": None, "username": None, "ssl": True, "verify_ssl": False}
@@ -839,10 +896,62 @@ class TestMain(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["overrides"], expected)
 
     def test_not_given_means_the_environment(self):
-        with patch.object(checkisapi, "client_from_env", return_value="client") as client, \
+        with patch.object(checkisapi, "client_from_env") as client, \
                 patch.object(checkisapi, "run", return_value=0):
             checkisapi.main([])
         client.assert_called_once_with(host=None, port=None, username=None, ssl=None, verify_ssl=None)
+
+    def test_the_connection_is_closed_whatever_happens(self):
+        for outcome, code in ((0, 0), (1, 1), (E401, 2), (E503, 2), (NO_CONNECTION, 2)):
+            with self.subTest(outcome):
+                with patch.object(checkisapi, "client_from_env") as client, patch("builtins.print"), \
+                        patch.object(checkisapi, "run", side_effect=[outcome]):
+                    self.assertEqual(checkisapi.main([]), code)
+                client.return_value.close.assert_called_once_with()
+
+    def test_path_without_write_is_refused(self):
+        with patch.object(checkisapi, "client_from_env") as client, patch("sys.stderr"), \
+                self.assertRaises(SystemExit) as raised:
+            checkisapi.main(["--path", "WDR/mode"])
+        self.assertEqual(raised.exception.code, 2)
+        client.assert_not_called()
+
+    def test_path_goes_with_write_or_all(self):
+        for flag in ("--write", "--all"):
+            with self.subTest(flag):
+                with patch.object(checkisapi, "client_from_env"), \
+                        patch.object(checkisapi, "run", return_value=0) as run:
+                    checkisapi.main([flag, "--path", "WDR/mode"])
+                self.assertEqual(run.call_args.args[3:5], (True, "WDR/mode"))
+
+
+class TestBadPassword(unittest.TestCase):
+    def check(self, client_error, camera_id, auth_failed):
+        client = MagicMock()
+        client.get_image_channels.side_effect = client_error
+        camera = MagicMock(get_id=camera_id, auth_failed=auth_failed)
+        report = checkisapi.Report(lambda line: None)
+        with patch.dict("os.environ", ENV, clear=True), \
+                patch.object(checkisapi, "ISAPIClient", return_value=client) as new_client, \
+                patch("pyhik.hikvision.HikCamera", return_value=camera) as new_camera:
+            checkisapi.check_bad_password(report, lambda line: None, {"host": "arg-host"})
+        self.assertEqual(new_client.call_args.kwargs["password"], "pw-wrong")
+        self.assertEqual(new_camera.call_args.args, ("http://arg-host", 8080, "env-user", "pw-wrong", True))
+        client.close.assert_called_once_with()
+        return [(name.split("(")[1].rstrip(")"), status) for name, status, _ in report.results]
+
+    def test_both_clients_report_it(self):
+        self.assertEqual(self.check(E401, None, True),
+                         [("ISAPIClient", "PASS"), ("HikCamera.auth_failed", "PASS")])
+
+    def test_a_device_that_accepts_the_wrong_password_fails(self):
+        self.assertEqual(self.check(None, "DS-2CD2385G1-I20190101AAWRD12345678", False),
+                         [("ISAPIClient", "FAIL"), ("HikCamera.auth_failed", "FAIL")])
+
+    def test_another_error_is_not_an_authentication_failure(self):
+        self.assertEqual(self.check(NO_CONNECTION, None, False),
+                         [("ISAPIClient", "FAIL"), ("HikCamera.auth_failed", "FAIL")])
+
 
 class TestPackageCommand(unittest.TestCase):
     """python -m pyhik <command>"""
