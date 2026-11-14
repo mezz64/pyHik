@@ -322,7 +322,8 @@ def put_back(client, report, channel, proxy, settings, before, paths, out, skip=
 
     Only what differs from before is written. With anything_else=True that is every
     setting that differs, not just these paths: for a write that raised before it
-    could say what it had switched off to make room.
+    could say what it had switched off to make room. Without it, what else differs is
+    listed and left alone: this check did not change it, so it is not its to write.
 
     Returns an ISAPIAuthError or None. It never raises, so it cannot hide the error that
     made the restore necessary, and one setting that cannot be put back does not stop
@@ -348,6 +349,7 @@ def put_back(client, report, channel, proxy, settings, before, paths, out, skip=
                    "could not see what else was changed, check WDR, HLC, BLC and defog by hand")
 
     todo = restore_steps(client, channel, proxy, settings, before, paths)
+    known = {path for wanted, _ in todo for path in wanted}
     if now is not None:
         todo = [(wanted, write) for wanted, write in todo
                 if any(now.get(path) != value for path, value in wanted.items())]
@@ -396,6 +398,14 @@ def put_back(client, report, channel, proxy, settings, before, paths, out, skip=
             problem = "NOT CHECKED (could not read it back: %s)" % unread
         out("   restore %s: %s, set it back by hand" % (label, problem))
         report.add("restore of " + ", ".join(wanted), "FAIL", "check it and set it back by hand: " + label)
+
+    last = after if after is not None else now
+    others = [] if last is None else [
+        "%s was %s, is %s" % (path, value, last.get(path))
+        for path, value in before.items() if path not in known and last.get(path) != value]
+    if others:
+        out("   note: also different from before, and not changed by pyhik as far as this check "
+            "knows: " + ", ".join(others))
     return auth_error
 
 
@@ -540,7 +550,15 @@ def check_conflicts(client, report, channel, proxy, settings, out):
 
     columns = [(f, label, apply) for f in features for label, apply in f.variants]
     cells = {}  # (row feature name, column label) -> (symbol, detail)
+    made_room = {}  # what pyhik switched off by itself; it may be none of the features
+
+    def tracked(write):
+        result = write()
+        made_room.update(result.also_changed)
+        return result
+
     stop = False
+    finished = False
     try:
         for row in features:
             for feature, label, apply in columns:
@@ -548,15 +566,15 @@ def check_conflicts(client, report, channel, proxy, settings, out):
                     cells[(row.name, label)] = ("-", "")
                     continue
                 for f in features:  # known starting point: everything off
-                    f.off()
+                    tracked(f.off)
                 first = row.variants[0]
-                setup = first[1]()
+                setup = tracked(first[1])
                 if not setup.success:
                     cells[(row.name, label)] = ("?", "could not turn %s on first: %s" % (
                         first[0], setup.error_description))
                     continue
                 codes.codes.clear()
-                result = apply()
+                result = tracked(apply)
                 values = read()
                 row_still_on = row.is_on(values)
                 seen = ", ".join(dict.fromkeys(codes.codes))
@@ -570,14 +588,18 @@ def check_conflicts(client, report, channel, proxy, settings, out):
                 else:
                     cells[(row.name, label)] = ("X", "refused: %s" % (
                         result.sub_status if not seen else "%s (%s)" % (result.sub_status, seen)))
+        finished = True
     except ISAPIAuthError:
         stop = True  # more requests would only add failed logins
         raise
     finally:
         logger.removeHandler(codes)
         logger.setLevel(old_level)
-        auth_error = put_back(client, report, channel, proxy, settings, before,
-                              [p for f in features for p in f.paths], out, skip=stop)
+        # The features, and what pyhik reported switching off to make room. A write that
+        # raised reported nothing, so after an error everything that differs is put back.
+        paths = [p for f in features for p in f.paths] + list(made_room)
+        auth_error = put_back(client, report, channel, proxy, settings, before, paths, out,
+                              skip=stop, anything_else=not finished)
     if auth_error:
         raise auth_error
 

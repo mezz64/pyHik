@@ -283,10 +283,12 @@ class TestCheckWrite(unittest.TestCase):
         self.assertTrue(any("NOT RESTORED" in line for line in lines))
 
     def test_only_what_the_write_switched_off_is_put_back(self):
-        device, report, _ = self.write(None, DriftingDevice(VALUES))
+        device, report, lines = self.write(None, DriftingDevice(VALUES))
         self.assertEqual(device.sets, [("Color/brightnessLevel", "51"), ("Color/brightnessLevel", "50")])
         self.assertEqual(device.values["Color/contrastLevel"], "7", "not ours to change")
         self.assertFalse(report.failed)
+        self.assertIn("   note: also different from before, and not changed by pyhik as far as this check "
+                      "knows: Color/contrastLevel was 100, is 7", lines)
 
     def test_an_error_while_restoring_does_not_hide_the_first_error(self):
         device = ErrorDevice(VALUES, write_errors={2: ISAPIError("restore failed")},
@@ -512,10 +514,11 @@ class TestConflictsOnADevice(DeviceTest):
     119 fill the table, then the restore reads (120), writes BLC back (121, 122) and checks (123).
     """
 
-    def conflicts(self, camera=None, fail=None, fail_from=None):
+    def conflicts(self, camera=None, fail=None, fail_from=None, without=()):
         self.connect(camera or SimCamera(forgets_blc_mode=True))
         self.camera.fail, self.camera.fail_from = fail or {}, fail_from
-        checkisapi.check_conflicts(self.client, self.report, 1, False, self.settings, self.lines.append)
+        settings = [s for s in self.settings if s.path not in without]
+        checkisapi.check_conflicts(self.client, self.report, 1, False, settings, self.lines.append)
 
     def test_every_pair_is_tried_and_the_device_is_left_as_found(self):
         self.conflicts()
@@ -543,11 +546,30 @@ class TestConflictsOnADevice(DeviceTest):
                 self.assertEqual(len(self.camera.calls), number + 1)
                 self.assertTrue(self.report.failed)
                 self.assertEqual(self.restores(), [
+                    "restore: NOT CHECKED what else was changed before the error, compare WDR, HLC, BLC and "
+                    "defog with the values listed above",
                     "restore WDR/mode -> close: NOT TRIED after the authentication error, set it back by hand",
                     "restore HLC/enabled -> true: NOT TRIED after the authentication error, set it back by hand",
                     "restore BLC/enabled -> true, BLC/BLCMode -> AUTO: NOT TRIED after the authentication error, "
                     "set it back by hand",
                 ])
+
+    def test_what_pyhik_switched_off_is_put_back_even_if_the_check_does_not_try_it(self):
+        # HLC is on, but in a form this check does not turn into a row of the table.
+        self.conflicts(without=("HLC/enabled",))
+        self.assertIn("   before: WDR/mode=close, BLC/BLCMode=AUTO, BLC/enabled=true", self.lines)
+        self.assert_left_as_found()
+        self.assertIn("restore HLC/enabled -> true: restored", self.restores())
+
+    def test_everything_that_differs_is_put_back_after_an_error(self):
+        # Requests 9 and 10 are pyhik switching HLC off; the write it does that for is lost (11).
+        with self.assertRaises(ISAPIConnectionError):
+            self.conflicts(without=("HLC/enabled",), fail={11: LOST})
+        self.assert_left_as_found()
+        self.assertEqual(self.restores(), [
+            "restore HLC/enabled -> true: restored",
+            "restore BLC/enabled -> true, BLC/BLCMode -> AUTO: restored",
+        ])
 
     def test_an_error_does_not_stop_the_restore(self):
         for number in (2, 30, 77, 119):
@@ -609,6 +631,35 @@ class TestConflictsOnADevice(DeviceTest):
         checkisapi.check_conflicts(self.client, self.report, 1, False, settings, self.lines.append)
         self.assertEqual(self.camera.calls, [])
         self.assertEqual(self.report.results[0][:2], ("conflicts", "SKIP"))
+
+
+class TestWhatElseDiffers(DeviceTest):
+    class ResetsTheWdrLevel(SimCamera):
+        """Forgets its WDR level whenever WDR is switched."""
+
+        def request(self, method, url, **kwargs):
+            mode = get_text(self.xml, "WDR/mode")
+            reply = super().request(method, url, **kwargs)
+            if get_text(self.xml, "WDR/mode") != mode:
+                self.xml = re.sub("<WDRLevel>[0-9]+</WDRLevel>", "<WDRLevel>50</WDRLevel>", self.xml)
+            return reply
+
+    NOTE = ("   note: also different from before, and not changed by pyhik as far as this check knows: "
+            "WDR/WDRLevel was 41, is 50")
+
+    def test_it_is_listed_after_a_write(self):
+        self.write("WDR/mode", self.ResetsTheWdrLevel())
+        self.assertIn(self.NOTE, self.lines)
+        self.assertFalse(self.report.failed)
+
+    def test_it_is_listed_after_the_conflicts(self):
+        self.connect(self.ResetsTheWdrLevel())
+        checkisapi.check_conflicts(self.client, self.report, 1, False, self.settings, self.lines.append)
+        self.assertIn(self.NOTE, self.lines)
+
+    def test_nothing_is_listed_when_nothing_else_differs(self):
+        self.write("WDR/mode")
+        self.assertFalse([line for line in self.lines if "note:" in line])
 
 
 class TestRestoreSteps(unittest.TestCase):

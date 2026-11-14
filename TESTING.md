@@ -105,7 +105,14 @@ and the change went through. `=` means this device allows both. `X` is a failure
 refused and pyhik did not know how to resolve it. That is the case to report, with the code
 shown. The cases depend on which of WDR, HLC, BLC and defog your device offers; with fewer
 than two the check is skipped. The camera's original values are put back at the end
-(`restore: restored`).
+(`restore ...: restored` for each setting that the last case left different). That
+includes a setting pyhik switched off by itself to make room, even one that is not in
+the table.
+
+After a restore, the script compares everything else with what it read at the start. If
+a setting it did not change is different now, it prints a `note: also different from
+before ...` line and leaves that setting alone: the device changed it by itself (some
+reset a level when its feature is switched), or someone else did. Check those by hand.
 
 ## NVRs
 
