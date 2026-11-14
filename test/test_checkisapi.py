@@ -245,7 +245,10 @@ class TestCheckWrite(unittest.TestCase):
         self.assertEqual(device.sets, [("Color/brightnessLevel", "51"), ("Color/brightnessLevel", "50")])
         self.assertEqual(device.values, VALUES)
         self.assertFalse(report.failed)
-        self.assertTrue(any("--path" in line for line in lines), "names paths to try")
+        self.assertEqual(lines[-2:], [
+            "   to try a switch too: --write --path WDR/enabled | HLC/enabled",
+            "   to try a select too: --write --path IrcutFilter/IrcutFilterType",  # not the one with one option
+        ])
 
     def test_number_at_its_maximum_goes_down(self):
         device, _, _ = self.write("Color/contrastLevel")
@@ -275,7 +278,15 @@ class TestCheckWrite(unittest.TestCase):
             with self.subTest(path):
                 device, report, _ = self.write(path)
                 self.assertEqual(device.sets, [])
-                self.assertFalse(report.failed)
+                self.assertEqual([status for _, status, _ in report.results], ["SKIP"])
+
+    def test_the_default_is_the_first_number_that_can_move(self):
+        stuck = ImageSetting("Color/brightnessLevel", T.NUMBER, min_value=50, max_value=50, value="50")
+        absent = ImageSetting("Mode/OffLevel", T.NUMBER, min_value=0, max_value=100, value="19")
+        device = FakeDevice(VALUES)
+        report = checkisapi.Report(lambda line: None)
+        checkisapi.check_write(device, report, 1, False, [stuck, absent] + SETTINGS[1:], None, lambda line: None)
+        self.assertEqual(device.sets, [("Color/contrastLevel", "99"), ("Color/contrastLevel", "100")])
 
     def test_failed_restore_is_reported(self):
         _, report, lines = self.write(None, FakeDevice(VALUES, fail_restore=True))
@@ -438,6 +449,22 @@ class TestWriteOnADevice(DeviceTest):
         self.assertEqual(self.report.results[0], ("write", "PASS", "read back OK"))
         self.assert_left_as_found()
         self.assertEqual(self.restores(), ["restore BLC/enabled -> false: restored"])
+
+    def test_a_setting_the_device_does_not_report_right_now_is_skipped(self):
+        # Listed with the default of the capabilities; the document has no AdvancedMode while
+        # the noise reduction mode is "general".
+        self.write("NoiseReduce/AdvancedMode/FrameNoiseReduceLevel")
+        self.assertEqual(self.camera.puts, [])
+        self.assertEqual(self.report.results, [(
+            "write", "SKIP", "NoiseReduce/AdvancedMode/FrameNoiseReduceLevel is not in the device's current "
+            "values: it belongs to a mode or feature that is off (take another path)")])
+
+    def test_the_suggested_paths_can_be_changed(self):
+        self.write(None)
+        self.assertEqual(self.lines[-2:], [
+            "   to try a switch too: --write --path ImageFlip/enabled | Exposure/OverexposeSuppress/enabled | HLC/enabled",
+            "   to try a select too: --write --path WDR/mode | BLC/BLCMode | IrcutFilter/IrcutFilterType",
+        ])
 
     def test_a_restore_the_device_accepts_but_does_not_apply_is_reported(self):
         class KeepsBrightness(SimCamera):
@@ -721,6 +748,18 @@ class TestOtherValue(unittest.TestCase):
         self.assertEqual(checkisapi.other_value(by_path["HLC/enabled"]), "false")
         self.assertEqual(checkisapi.other_value(by_path["IrcutFilter/IrcutFilterType"]), "day")
         self.assertIsNone(checkisapi.other_value(by_path["OnlyOne/mode"]))
+        self.assertIsNone(checkisapi.other_value(by_path["Unset/x"]))
+
+    def test_a_number_stays_in_its_range(self):
+        def number(value, low, high):
+            return checkisapi.other_value(ImageSetting("x", T.NUMBER, min_value=low, max_value=high, value=value))
+
+        self.assertEqual(number("0", 0.0, 1.0), "1")
+        self.assertEqual(number("1", 0.0, 1.0), "0")
+        self.assertIsNone(number("7", 7.0, 7.0))
+        self.assertIsNone(number("120", 0.0, 100.0))
+        self.assertIsNone(number("1.5", 0.0, 100.0))
+        self.assertIsNone(number("7", None, None))
 
 
 ENV = {"CAMERA_HOST": "env-host", "CAMERA_PORT": "8080", "CAMERA_USERNAME": "env-user", "CAMERA_PASSWORD": "pw"}

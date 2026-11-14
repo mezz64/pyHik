@@ -67,7 +67,8 @@ reached or refused the login.
 
 A `SKIP` is normal: for example `--conflicts` is skipped on a device that offers fewer than
 two of WDR, HLC, BLC and defog, and `--write --path` is skipped when the path is not in the
-list or the setting has no other value to try.
+list, the setting has no other value to try, or the device does not report it right now
+(the list also shows what belongs to a mode that is off, with its default value).
 
 ### Changing a switch or a select
 

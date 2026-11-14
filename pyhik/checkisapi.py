@@ -161,14 +161,13 @@ def _describe(err):
     )
 
 
-def pick_number(settings, path=None):
-    """The setting to change: the given path, else brightness, else any numeric setting."""
-    by_path = {s.path: s for s in settings}
-    if path:
-        return by_path.get(path)
-    if "Color/brightnessLevel" in by_path:
-        return by_path["Color/brightnessLevel"]
-    return next((s for s in settings if s.type is ImageSettingType.NUMBER and s.value), None)
+def writable(setting, values):
+    """Whether the device reports the setting right now, so that there is a value to change.
+
+    get_image_settings() also lists what the device offers but leaves out of its current
+    values, with the default as its value: the level of a mode that is off, for example.
+    """
+    return (setting.linked_enabled_path or setting.path) in values
 
 
 def other_value(target):
@@ -182,7 +181,8 @@ def other_value(target):
         return None
     if target.type is ImageSettingType.NUMBER:
         try:
-            return str(int(original) + 1 if int(original) < int(target.max_value) else int(original) - 1)
+            new = int(original) + 1 if int(original) < target.max_value else int(original) - 1
+            return str(new) if target.min_value <= new <= target.max_value else None
         except (TypeError, ValueError):
             return None
     if target.type is ImageSettingType.SWITCH:
@@ -190,10 +190,24 @@ def other_value(target):
     return next((o for o in target.options if o != original), None)
 
 
-def suggest_paths(settings, out):
+def can_change(setting, values):
+    return writable(setting, values) and other_value(setting) is not None
+
+
+def pick_setting(settings, values, path=None):
+    """The setting to change: the given path, else brightness, else the first number that can move."""
+    by_path = {s.path: s for s in settings}
+    if path:
+        return by_path.get(path)
+    numbers = [s for s in settings if s.type is ImageSettingType.NUMBER and can_change(s, values)]
+    brightness = by_path.get("Color/brightnessLevel")
+    return brightness if brightness in numbers else next(iter(numbers), None)
+
+
+def suggest_paths(settings, values, out):
     """Name a few switches and selects the user can try with --path."""
     for kind, label in ((ImageSettingType.SWITCH, "switch"), (ImageSettingType.SELECT, "select")):
-        paths = [s.path for s in settings if s.type is kind and s.value is not None][:3]
+        paths = [s.path for s in settings if s.type is kind and can_change(s, values)][:3]
         if paths:
             out("   to try a %s too: --write --path %s" % (label, " | ".join(paths)))
 
@@ -412,18 +426,22 @@ def put_back(client, report, channel, proxy, settings, before, paths, out, skip=
 def check_write(client, report, channel, proxy, settings, path, out):
     """Change one setting (number, switch or select), read it back, put it back."""
     out("4. change a setting and put it back")
-    target = pick_number(settings, path)
+    before = client.get_image_values(channel, proxy=proxy)
+    target = pick_setting(settings, before, path)
     if target is None and path:
         report.add("write", "SKIP", "no setting with the path %s (take one from the list)" % path)
         return
-    if target is None or target.value is None:
-        report.add("write", "SKIP", "no suitable numeric setting (use --path)")
+    if target is None:
+        report.add("write", "SKIP", "no numeric setting that can be changed (use --path)")
+        return
+    if not writable(target, before):
+        report.add("write", "SKIP", "%s is not in the device's current values: it belongs to a mode "
+                   "or feature that is off (take another path)" % target.path)
         return
     new = other_value(target)
     if new is None:
         report.add("write", "SKIP", "%s has no other value to try" % target.path)
         return
-    before = client.get_image_values(channel, proxy=proxy)
     out("   %s (%s): %s -> %s" % (target.path, target.type.value, target.value, new))
     result = None
     stop = False
@@ -450,7 +468,7 @@ def check_write(client, report, channel, proxy, settings, path, out):
     if auth_error:
         raise auth_error
     if not path:
-        suggest_paths(settings, out)
+        suggest_paths(settings, before, out)
 
 
 class Feature:
