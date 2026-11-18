@@ -54,6 +54,7 @@ camera.disconnect()
 * `current_event_states` - dictionary of all tracked events and their current state
 * `current_motion_detection_state` - current motion detection on/off state
 * `stream_connected` - whether the event stream is currently connected
+* `stream_auth_failed` - `True` while the device refuses the credentials for the event stream (two refusals without a connection in between). The stream then tries again only every 30 minutes, since attempts at the usual pace with a rejected password can lock the account, and a locked account or a restored password recovers by itself. Registered callbacks are called when it becomes `True` and when it becomes `False` again
 
 ### Functions
 * `start_stream()` - start the event stream processing thread
