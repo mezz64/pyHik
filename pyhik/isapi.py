@@ -88,6 +88,13 @@ class ISAPIError(Exception):
 
     ``status_code`` and ``sub_status`` carry the HTTP status and the device's
     ``subStatusCode`` (e.g. ``notSupport``) when the error came from a response.
+
+    ``also_changed`` is only filled in by the image setting methods that resolve
+    conflicts (:meth:`ISAPIClient.set_image_setting` and
+    :meth:`ISAPIClient.set_image_linked_setting`). It holds the settings that were
+    already switched off to make room when a later request failed, as
+    ``{path: new value}``, the same as ``ImageWriteResult.also_changed``. The
+    device is in that state whether or not the caller knows about it.
     """
 
     def __init__(
@@ -99,6 +106,7 @@ class ISAPIError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.sub_status = sub_status or None
+        self.also_changed: Dict[str, str] = {}
 
 
 class ISAPIConnectionError(ISAPIError):
@@ -1305,8 +1313,26 @@ class ISAPIClient:
         channel: Union[int, str],
         proxy: bool,
     ) -> ImageWriteResult:
-        result = attempt()
         also_changed: Dict[str, str] = {}
+        try:
+            return self._resolve_image_conflicts(
+                attempt, path, channel, proxy, also_changed
+            )
+        except ISAPIError as err:
+            # A blocker may already be off when a later request fails, so the
+            # caller needs to know, or the device and the caller disagree.
+            err.also_changed = dict(also_changed)
+            raise
+
+    def _resolve_image_conflicts(
+        self,
+        attempt: Callable[[], ImageWriteResult],
+        path: str,
+        channel: Union[int, str],
+        proxy: bool,
+        also_changed: Dict[str, str],
+    ) -> ImageWriteResult:
+        result = attempt()
 
         def finish(final: ImageWriteResult) -> ImageWriteResult:
             return replace(final, also_changed=dict(also_changed)) if also_changed else final
@@ -1365,7 +1391,8 @@ class ISAPIClient:
         way (e.g. enabling WDR while BLC or HLC is on), the blocker is
         switched off first and the change is retried. Check
         ``result.success``; connection, read and authentication (401)
-        errors raise as in :meth:`put_image_settings`.
+        errors raise as in :meth:`put_image_settings`. If one is raised after a
+        blocker was switched off, the error's ``also_changed`` lists it.
         """
         return self._with_image_conflict_resolution(
             lambda: self.put_image_settings({path: value}, channel, proxy),
