@@ -133,7 +133,7 @@ A write reads the full document, changes only the target value and sends it back
 
 * Some settings conflict (enabling WDR while BLC or HLC is on and the reverse); the setting in the way is switched off first.
 * Firmware that reports the HLC conflict as `HLCMutexWDROrDehaze` or `WDROrDehazeMutexHLC` (HTTP 403) is handled the same way: HLC is switched off when WDR or defog is turned on; WDR and defog are switched off when HLC is turned on.
-* The settings that were switched off to make room are listed in `ImageWriteResult.also_changed` (example `{"HLC/enabled": "false"}`).
+* The settings that were switched off to make room are listed in `ImageWriteResult.also_changed` (example `{"HLC/enabled": "false"}`). If a request fails after that, the error raised has the same list in its `also_changed` attribute.
 * If a conflict cannot be resolved `ImageWriteResult.error_description` has the explanation.
 * Cameras that reject writes to the full document with `notSupport` but accept a per-feature sub-endpoint (example `/ISAPI/Image/channels/1/Shutter`) are handled automatically when all the changes belong to the same feature (example `BLC/enabled` and `BLC/BLCMode`).
 * Writes are not atomic, avoid overlapping writes to the same device.
