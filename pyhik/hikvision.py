@@ -37,7 +37,9 @@ from pyhik.watchdog import Watchdog
 from pyhik.constants import (
     DEFAULT_PORT, DEFAULT_RTSP_PORT, DEFAULT_HEADERS, XML_NAMESPACE, SENSOR_MAP,
     CAM_DEVICE, NVR_DEVICE, CONNECT_TIMEOUT, READ_TIMEOUT, SNAPSHOT_TIMEOUT,
-    RECORDING_SEARCH_TIMEOUT, DOWNLOAD_TIMEOUT, CHANNEL_NAMES, ID_TYPES,
+    RECORDING_SEARCH_TIMEOUT, DOWNLOAD_TIMEOUT, STREAM_AUTH_FAILURES,
+    STREAM_AUTH_RETRY_INTERVAL,
+    CHANNEL_NAMES, ID_TYPES,
     VALID_NOTIFICATION_METHODS, TRIGGERS_CAP_SUFFIX, TRIGGERS_CAP_EVENTS,
     __version__)
 
@@ -131,6 +133,11 @@ class HikCamera(object):
         # True if the device answered but rejected the credentials, so that a
         # missing device ID can be told apart from an unreachable device.
         self.auth_failed = False
+        # True while the device refuses the credentials for the event stream,
+        # after two refusals without a connection in between. The stream then
+        # tries again only every STREAM_AUTH_RETRY_INTERVAL seconds, because
+        # attempts at the usual pace with a rejected password can lock the account.
+        self.stream_auth_failed = False
         self.device_type = None
         self.device_model = ''
         self.firmware_version = ''
@@ -213,8 +220,14 @@ class HikCamera(object):
         self._stream_connected = connected
         _LOGGING.info('%s event stream %s', self.name,
                       'connected' if connected else 'disconnected')
-        # Notify every registered callback, so a consumer can mark all of its
-        # sensors unavailable while the device is unreachable.
+        self._notify_all_callbacks()
+
+    def _notify_all_callbacks(self):
+        """Call every registered callback with the sensor it was added for.
+
+        Used for changes that concern the whole device, so that a consumer can
+        mark all of its sensors unavailable while the device is unreachable.
+        """
         for callback, sensor in list(self._updateCallbacks):
             callback(sensor)
 
@@ -826,6 +839,7 @@ class HikCamera(object):
         start_event = False
         parse_string = ""
         fail_count = 0
+        auth_failures = 0
 
         url = '%s/ISAPI/Event/notification/alertStream' % self.root_url
 
@@ -843,11 +857,38 @@ class HikCamera(object):
                                                          timeout=(CONNECT_TIMEOUT,
                                                                   READ_TIMEOUT))
 
+                if stream.status_code == requests.codes.unauthorized:
+                    stream.close()
+                    auth_failures += 1
+                    if auth_failures >= STREAM_AUTH_FAILURES:
+                        # The device refuses the credentials. More attempts at
+                        # the usual pace can lock the account, so slow down and
+                        # let the consumer know. The stream is not given up: a
+                        # locked account opens again by itself, and a password
+                        # that is put back works again.
+                        if not self.stream_auth_failed:
+                            _LOGGING.error(
+                                '%s rejected the credentials for the event '
+                                'stream. Trying again every %d minutes.',
+                                self.name, STREAM_AUTH_RETRY_INTERVAL // 60)
+                            self.stream_auth_failed = True
+                            if self._stream_connected:
+                                self._set_stream_connected(False)
+                            else:
+                                self._notify_all_callbacks()
+                        self.watchdog.stop()
+                        if kill_event.wait(STREAM_AUTH_RETRY_INTERVAL):
+                            break
+                        continue
+                    raise ValueError('Connection unsucessful.')
                 if stream.status_code != requests.codes.ok:
                     raise ValueError('Connection unsucessful.')
                 else:
                     _LOGGING.debug('%s Connection Successful.', self.name)
                     fail_count = 0
+                    auth_failures = 0
+                    # Before the callbacks are called, so that they see it.
+                    self.stream_auth_failed = False
                     self._set_stream_connected(True)
                     self.watchdog.start()
 

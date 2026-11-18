@@ -14,6 +14,12 @@ __version__ = '{}.{}.{}'.format(
 
 CONNECT_TIMEOUT = 10
 READ_TIMEOUT = 60
+# Refusals of the credentials by the event stream, without a connection between
+# them, before it is reported as refused and slowed down
+STREAM_AUTH_FAILURES = 2
+# Seconds between its attempts then. A locked account is usually open again
+# after about this long, and one attempt per interval does not keep it locked.
+STREAM_AUTH_RETRY_INTERVAL = 1800
 SNAPSHOT_TIMEOUT = 10
 RECORDING_SEARCH_TIMEOUT = 30
 DOWNLOAD_TIMEOUT = 300
