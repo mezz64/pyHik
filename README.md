@@ -47,7 +47,7 @@ camera.disconnect()
 * `add_update_callback(callback, msg)` - register a callback function, called with `cam_id.event_type.channel` whenever a tracked event changes state.
 
 ### Properties
-* `get_id` - unique camera/NVR id
+* `get_id` - unique camera/NVR id: the device's `deviceID`, or, when that is 10 characters or fewer, a `uuid.UUID` derived from its serial number (else its MAC address), the same at every connection. Only a device that reports neither gets a random UUID
 * `get_name` - camera/NVR name
 * `get_type` - device type (`CAM` or `NVR`)
 * `auth_failed` - `True` if the device answered but rejected the credentials, so a missing `get_id` can be told apart from an unreachable device
