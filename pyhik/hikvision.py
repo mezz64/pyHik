@@ -100,6 +100,29 @@ report IR status and allow
 """
 
 # pylint: disable=too-many-instance-attributes
+# Namespace of the IDs made for devices whose own deviceID is too short to be
+# unique. Fixed, so a device gets the same ID at every connection.
+_FALLBACK_ID_NAMESPACE = uuid.UUID('5b0f6c5e-2f4e-4a8c-9b52-6d1c3a7e2f10')
+
+
+def _device_id(device_info):
+    """Return the ID of a device: its deviceID, or one made from its serial or MAC.
+
+    Some devices report a short deviceID (often a channel or panel number), too
+    short to tell devices apart. They get a UUID instead. It is derived from the
+    serial number, or else the MAC address, so it is the same at every connection
+    and for every client. Only a device that reports neither gets a random one.
+    """
+    device_id = (device_info.get('deviceID') or '').strip()
+    if len(device_id) > 10:
+        return device_id
+    for key in ('serialNumber', 'macAddress'):
+        value = (device_info.get(key) or '').strip()
+        if value:
+            return uuid.uuid5(_FALLBACK_ID_NAMESPACE, f'{key}:{value.lower()}')
+    return uuid.uuid4()
+
+
 class HikCamera(object):
     """Creates a new Hikvision api device."""
 
@@ -514,10 +537,7 @@ class HikCamera(object):
             if key == 'deviceName':
                 self.name = device_info[key]
             elif key == 'deviceID':
-                if len(device_info[key]) > 10:
-                    self.cam_id = device_info[key]
-                else:
-                    self.cam_id = uuid.uuid4()
+                self.cam_id = _device_id(device_info)
 
         events_available = self.get_event_triggers(VALID_NOTIFICATION_METHODS)
         if events_available:

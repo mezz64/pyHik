@@ -7,6 +7,7 @@ import requests
 import threading
 import time
 import unittest
+import uuid
 import xml.etree.ElementTree as ET
 
 from unittest.mock import call, MagicMock, patch, PropertyMock
@@ -1550,3 +1551,50 @@ class NamespaceTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeviceIdTestCase(unittest.TestCase):
+    """The ID of a device, and the one made up for a short deviceID."""
+
+    def _camera_id(self, device_info):
+        with patch("pyhik.hikvision.requests.Session") as mock_session, \
+                patch("pyhik.hikvision.HikCamera.get_device_info",
+                      return_value=device_info):
+            mock_session.return_value.get.return_value.status_code = (
+                requests.codes.not_found)
+            return HikCamera(host="localhost").get_id
+
+    def test_a_long_device_id_is_used_as_it_is(self):
+        self.assertEqual(
+            self._camera_id({"deviceName": "Test", "deviceID": "12345678901"}),
+            "12345678901")
+
+    def test_a_short_device_id_gets_the_same_id_from_the_serial(self):
+        info = {"deviceName": "Test", "deviceID": "88",
+                "serialNumber": "DS-2CD2142FWD-I20170101AAWR123456789",
+                "macAddress": "44:19:b6:00:00:01"}
+        first = self._camera_id(info)
+        self.assertIsInstance(first, uuid.UUID)
+        self.assertEqual(self._camera_id(dict(info)), first)
+        # Another device gets another one.
+        other = dict(info, serialNumber="DS-2CD2142FWD-I20170101AAWR987654321")
+        self.assertNotEqual(self._camera_id(other), first)
+
+    def test_a_short_device_id_without_serial_uses_the_mac_address(self):
+        info = {"deviceName": "Test", "deviceID": "1",
+                "macAddress": "44:19:B6:00:00:01"}
+        first = self._camera_id(info)
+        self.assertIsInstance(first, uuid.UUID)
+        # The spelling of the address does not matter.
+        self.assertEqual(
+            self._camera_id(dict(info, macAddress="44:19:b6:00:00:01")), first)
+
+    def test_a_short_device_id_with_nothing_else_gets_a_random_id(self):
+        info = {"deviceName": "Test", "deviceID": "1"}
+        first = self._camera_id(info)
+        self.assertIsInstance(first, uuid.UUID)
+        self.assertNotEqual(self._camera_id(dict(info)), first)
+
+    def test_an_empty_device_id_does_not_fail(self):
+        info = {"deviceName": "Test", "deviceID": None, "serialNumber": "SN1"}
+        self.assertIsInstance(self._camera_id(info), uuid.UUID)
