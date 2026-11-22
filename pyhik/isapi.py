@@ -1354,12 +1354,12 @@ class ISAPIClient:
             # blockers must be switched off in their own PUT before retrying.
             # Blockers that are absent or already off are left out of it, and
             # the document's own spelling of each path is used.
-            current = {
-                key.lower(): (key, value)
-                for key, value in parse_image_values(
-                    self._read_image_xml(self._image_endpoint(channel, proxy))
-                ).items()
-            }
+            document = self._read_image_xml(self._image_endpoint(channel, proxy))
+            try:
+                values = parse_image_values(document)
+            except ET.ParseError as err:
+                raise ISAPIError(f"Invalid image settings XML: {err}") from err
+            current = {key.lower(): (key, value) for key, value in values.items()}
             blockers: Dict[str, str] = {}
             for blocker, value in resolution.items():
                 found = current.get(blocker.lower())

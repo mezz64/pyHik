@@ -417,6 +417,25 @@ class TestConflictEdgeCases(unittest.TestCase):
         self.assertEqual(result.also_changed, {"BLC/enabled": "false", "HLC/enabled": "false"})
 
 
+    def test_an_unreadable_document_during_a_conflict_raises_an_isapi_error(self):
+        class GarbledCamera(FakeCamera):
+            gets = 0
+
+            def request(self, method, url, **kwargs):
+                resp = super().request(method, url, **kwargs)
+                if method == "GET":
+                    self.gets += 1
+                    if self.gets == 2:
+                        resp.content = b"<html>busy"
+                return resp
+
+        camera = GarbledCamera()
+        with self.assertRaises(ISAPIError) as caught:
+            client_for(camera).set_image_setting("WDR/mode", "open")
+        self.assertIn("Invalid image settings XML", str(caught.exception))
+        self.assertEqual(caught.exception.also_changed, {})
+
+
 class TestHlcMutexConflicts(unittest.TestCase):
     """Firmware that answers 403 HLCMutexWDROrDehaze instead of MutexWithWDR."""
 
