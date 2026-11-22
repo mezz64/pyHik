@@ -13,6 +13,8 @@ from unittest.mock import MagicMock
 from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 
+import requests
+
 from pyhik.image import (
     NO_SUB_STATUS,
     ImageSetting,
@@ -26,7 +28,7 @@ from pyhik.image import (
     raw_insert_after,
     raw_replace,
 )
-from pyhik.isapi import ISAPIAuthError, ISAPIClient, ISAPIError
+from pyhik.isapi import ISAPIAuthError, ISAPIClient, ISAPIConnectionError, ISAPIError
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CAPS = (FIXTURES / "image_capabilities_fixed_basic-DS-2CD2385G1.xml").read_bytes()
@@ -415,6 +417,25 @@ class TestConflictEdgeCases(unittest.TestCase):
         self.assertEqual(result.also_changed, {"BLC/enabled": "false", "HLC/enabled": "false"})
 
 
+    def test_an_unreadable_document_during_a_conflict_raises_an_isapi_error(self):
+        class GarbledCamera(FakeCamera):
+            gets = 0
+
+            def request(self, method, url, **kwargs):
+                resp = super().request(method, url, **kwargs)
+                if method == "GET":
+                    self.gets += 1
+                    if self.gets == 2:
+                        resp.content = b"<html>busy"
+                return resp
+
+        camera = GarbledCamera()
+        with self.assertRaises(ISAPIError) as caught:
+            client_for(camera).set_image_setting("WDR/mode", "open")
+        self.assertIn("Invalid image settings XML", str(caught.exception))
+        self.assertEqual(caught.exception.also_changed, {})
+
+
 class TestHlcMutexConflicts(unittest.TestCase):
     """Firmware that answers 403 HLCMutexWDROrDehaze instead of MutexWithWDR."""
 
@@ -558,6 +579,81 @@ class TestAlsoChanged(unittest.TestCase):
         result = client.set_image_setting("WDR/mode", "open")
         self.assertFalse(result.success)
         self.assertEqual(result.also_changed, {"HLC/enabled": "false"})
+
+
+class TestAlsoChangedOnErrors(unittest.TestCase):
+    """An error raised after a blocker was switched off says what was switched off."""
+
+    def failing_after_blockers(self, error):
+        camera = FakeCamera()
+        original = camera.request
+
+        def request(method, url, **kw):
+            # Once the blockers are off, the retry cannot be made.
+            if len(camera.puts) >= 2:
+                if isinstance(error, Exception):
+                    raise error
+                return error
+            return original(method, url, **kw)
+
+        client = client_for(camera)
+        client._session.request.side_effect = request
+        return camera, client
+
+    def test_connection_error_after_the_blockers_are_off(self):
+        camera, client = self.failing_after_blockers(
+            requests.exceptions.ConnectionError("gone")
+        )
+        with self.assertRaises(ISAPIConnectionError) as raised:
+            client.set_image_setting("WDR/mode", "open")
+        self.assertEqual(
+            raised.exception.also_changed,
+            {"BLC/enabled": "false", "HLC/enabled": "false"},
+        )
+        self.assertEqual(get_text(camera.xml, "BLC/enabled"), "false")
+
+    def test_rejected_credentials_after_the_blockers_are_off(self):
+        response = MagicMock(headers={}, status_code=401, content=HTML_ERROR_PAGE)
+        _, client = self.failing_after_blockers(response)
+        with self.assertRaises(ISAPIAuthError) as raised:
+            client.set_image_setting("WDR/mode", "open")
+        self.assertEqual(raised.exception.status_code, 401)
+        self.assertEqual(
+            raised.exception.also_changed,
+            {"BLC/enabled": "false", "HLC/enabled": "false"},
+        )
+
+    def test_linked_setting_reports_it_too(self):
+        xml = VALUES.replace(
+            "<enabled>true</enabled>\n<BLCMode>AUTO</BLCMode>", "<enabled>false</enabled>"
+        ).replace("<mode>close</mode>", "<mode>open</mode>", 1)
+        camera = FakeCamera(xml)
+        original = camera.request
+
+        def request(method, url, **kw):
+            if len(camera.puts) >= 2:
+                raise requests.exceptions.Timeout("slow")
+            return original(method, url, **kw)
+
+        client = client_for(camera)
+        client._session.request.side_effect = request
+        blc = {s.path: s for s in parse_image_capabilities(CAPS, VALUES.encode())}[
+            "BLC/BLCMode"
+        ]
+        with self.assertRaises(ISAPIConnectionError) as raised:
+            client.set_image_linked_setting(blc, "AUTO")
+        self.assertEqual(raised.exception.also_changed, {"WDR/mode": "close"})
+
+    def test_nothing_to_report_when_the_first_request_fails(self):
+        camera = FakeCamera()
+        client = client_for(camera)
+        client._session.request.side_effect = requests.exceptions.ConnectionError("gone")
+        with self.assertRaises(ISAPIConnectionError) as raised:
+            client.set_image_setting("WDR/mode", "open")
+        self.assertEqual(raised.exception.also_changed, {})
+
+    def test_new_errors_start_empty(self):
+        self.assertEqual(ISAPIError("x", 500).also_changed, {})
 
 
 class TestSubEndpointFallback(unittest.TestCase):
