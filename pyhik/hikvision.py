@@ -100,6 +100,29 @@ report IR status and allow
 """
 
 # pylint: disable=too-many-instance-attributes
+# Namespace of the IDs made for devices whose own deviceID is too short to be
+# unique. Fixed, so a device gets the same ID at every connection.
+_FALLBACK_ID_NAMESPACE = uuid.UUID('5b0f6c5e-2f4e-4a8c-9b52-6d1c3a7e2f10')
+
+
+def _device_id(device_info):
+    """Return the ID of a device: its deviceID, or one made from its serial or MAC.
+
+    Some devices report a short deviceID (often a channel or panel number), too
+    short to tell devices apart. They get a UUID instead. It is derived from the
+    serial number, or else the MAC address, so it is the same at every connection
+    and for every client. Only a device that reports neither gets a random one.
+    """
+    device_id = (device_info.get('deviceID') or '').strip()
+    if len(device_id) > 10:
+        return device_id
+    for key in ('serialNumber', 'macAddress'):
+        value = (device_info.get(key) or '').strip()
+        if value:
+            return uuid.uuid5(_FALLBACK_ID_NAMESPACE, f'{key}:{value.lower()}')
+    return uuid.uuid4()
+
+
 class HikCamera(object):
     """Creates a new Hikvision api device."""
 
@@ -514,10 +537,7 @@ class HikCamera(object):
             if key == 'deviceName':
                 self.name = device_info[key]
             elif key == 'deviceID':
-                if len(device_info[key]) > 10:
-                    self.cam_id = device_info[key]
-                else:
-                    self.cam_id = uuid.uuid4()
+                self.cam_id = _device_id(device_info)
 
         events_available = self.get_event_triggers(VALID_NOTIFICATION_METHODS)
         if events_available:
@@ -565,13 +585,13 @@ class HikCamera(object):
                 self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
                 self.hik_request_stream.auth = HTTPDigestAuth(self.usr, self.pwd)
                 using_digest = True
-                response = self.hik_request.get(url)
+                response = self.hik_request.get(url, timeout=CONNECT_TIMEOUT)
 
             if response.status_code == requests.codes.not_found:
                 # Try alternate URL for deviceInfo
                 _LOGGING.debug('Using alternate deviceInfo URL.')
                 url = '%s/System/deviceInfo' % self.root_url
-                response = self.hik_request.get(url)
+                response = self.hik_request.get(url, timeout=CONNECT_TIMEOUT)
                 # Seems to be difference between camera and nvr, they can't seem to
                 # agree if they should 404 or 401 first
                 if not using_digest and response.status_code == requests.codes.unauthorized:
@@ -579,7 +599,7 @@ class HikCamera(object):
                     self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
                     self.hik_request_stream.auth = HTTPDigestAuth(self.usr, self.pwd)
                     using_digest = True
-                    response = self.hik_request.get(url)
+                    response = self.hik_request.get(url, timeout=CONNECT_TIMEOUT)
 
         except (requests.exceptions.RequestException,
                 requests.exceptions.ConnectionError) as err:
@@ -605,7 +625,8 @@ class HikCamera(object):
 
             return device_info
 
-        except AttributeError as err:
+        except (AttributeError, ET.ParseError) as err:
+            # A 200 that is not XML: a login page, a proxy, not a Hikvision device.
             _LOGGING.error('Entire response: %s', response.text)
             _LOGGING.error('There was a problem: %s', err)
             return None
