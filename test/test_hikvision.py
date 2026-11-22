@@ -1519,6 +1519,30 @@ class NamespaceTestCase(unittest.TestCase):
         self.assertEqual(info["deviceName"], "TestCam")
         self.assertEqual(info["deviceID"], "12345678901")
 
+    def test_device_info_that_is_not_xml(self):
+        camera = make_camera()
+        camera.hik_request = MagicMock()
+        camera.hik_request.get.return_value = ok_response(
+            '<html><body>login</body>')
+
+        with self.assertLogs("pyhik.hikvision", "ERROR"):
+            self.assertIsNone(camera.get_device_info())
+        self.assertFalse(camera.auth_failed)
+
+    def test_device_info_retries_have_a_timeout(self):
+        camera = make_camera()
+        camera.hik_request = MagicMock()
+        unauthorized = MagicMock(status_code=requests.codes.unauthorized)
+        not_found = MagicMock(status_code=requests.codes.not_found)
+        camera.hik_request.get.side_effect = [
+            unauthorized, not_found, ok_response(
+                '<DeviceInfo><deviceID>12345678901</deviceID></DeviceInfo>')]
+
+        camera.get_device_info()
+
+        for sent in camera.hik_request.get.call_args_list:
+            self.assertEqual(sent.kwargs["timeout"], CONNECT_TIMEOUT)
+
     def test_motion_detection_keeps_the_device_namespace(self):
         camera = make_camera()
         camera.hik_request = MagicMock()

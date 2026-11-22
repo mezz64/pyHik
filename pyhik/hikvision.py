@@ -585,13 +585,13 @@ class HikCamera(object):
                 self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
                 self.hik_request_stream.auth = HTTPDigestAuth(self.usr, self.pwd)
                 using_digest = True
-                response = self.hik_request.get(url)
+                response = self.hik_request.get(url, timeout=CONNECT_TIMEOUT)
 
             if response.status_code == requests.codes.not_found:
                 # Try alternate URL for deviceInfo
                 _LOGGING.debug('Using alternate deviceInfo URL.')
                 url = '%s/System/deviceInfo' % self.root_url
-                response = self.hik_request.get(url)
+                response = self.hik_request.get(url, timeout=CONNECT_TIMEOUT)
                 # Seems to be difference between camera and nvr, they can't seem to
                 # agree if they should 404 or 401 first
                 if not using_digest and response.status_code == requests.codes.unauthorized:
@@ -599,7 +599,7 @@ class HikCamera(object):
                     self.hik_request.auth = HTTPDigestAuth(self.usr, self.pwd)
                     self.hik_request_stream.auth = HTTPDigestAuth(self.usr, self.pwd)
                     using_digest = True
-                    response = self.hik_request.get(url)
+                    response = self.hik_request.get(url, timeout=CONNECT_TIMEOUT)
 
         except (requests.exceptions.RequestException,
                 requests.exceptions.ConnectionError) as err:
@@ -625,7 +625,8 @@ class HikCamera(object):
 
             return device_info
 
-        except AttributeError as err:
+        except (AttributeError, ET.ParseError) as err:
+            # A 200 that is not XML: a login page, a proxy, not a Hikvision device.
             _LOGGING.error('Entire response: %s', response.text)
             _LOGGING.error('There was a problem: %s', err)
             return None
