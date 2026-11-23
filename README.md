@@ -136,6 +136,7 @@ A write reads the full document, changes only the target value and sends it back
 * The settings that were switched off to make room are listed in `ImageWriteResult.also_changed` (example `{"HLC/enabled": "false"}`).
 * If a conflict cannot be resolved `ImageWriteResult.error_description` has the explanation.
 * Cameras that reject writes to the full document with `notSupport` but accept a per-feature sub-endpoint (example `/ISAPI/Image/channels/1/Shutter`) are handled automatically when all the changes belong to the same feature (example `BLC/enabled` and `BLC/BLCMode`).
+* A feature with an `enabled` flag and a mode is reported as one select that sets both (`linked_enabled_path`), with an off option (`off_value`): BLC mode (`CLOSE`), and image flip (`ImageFlip/ImageFlipStyle`). The flip direction has no off option on the device, which omits it while flip is off and refuses flip on without it, so pyhik adds `OFF` (`off_value_written` is false: choosing it writes only the flag).
 * Writes are not atomic, avoid overlapping writes to the same device.
 
 For the cameras attached to an NVR, pass `proxy=True` (`/ISAPI/ContentMgmt/ImageProxy/channels/<id>`) and use the IDs returned by `get_image_channels(proxy=True)`:
