@@ -1393,9 +1393,10 @@ class ISAPIClient:
         if enabled_path is None:
             return self.set_image_setting(setting.path, value, channel, proxy)
         if value == setting.off_value:
-            return self.put_image_settings(
-                {enabled_path: "false", setting.path: value}, channel, proxy
-            )
+            changes = {enabled_path: "false"}
+            if setting.off_value_written:
+                changes[setting.path] = value
+            return self.put_image_settings(changes, channel, proxy)
         return self._with_image_conflict_resolution(
             lambda: self.put_image_setting_with_enable(
                 enabled_path, setting.path, value, channel, proxy

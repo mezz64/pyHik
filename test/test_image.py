@@ -67,7 +67,32 @@ class TestParseImageCapabilities(unittest.TestCase):
         self.assertEqual(advanced.value, "19")
 
     def test_empty_default_is_none(self):
-        self.assertIsNone(self.by_path["ImageFlip/ImageFlipStyle"].value)
+        # Without the values document, nothing says whether flip is on.
+        settings = by_path(parse_image_capabilities(CAPS))
+        self.assertIsNone(settings["ImageFlip/ImageFlipStyle"].value)
+
+    def test_image_flip_and_its_direction_are_merged(self):
+        # The direction has no off option, but the device omits it while flip
+        # is off and refuses flip on without it: one select, with OFF added.
+        style = self.by_path["ImageFlip/ImageFlipStyle"]
+        self.assertNotIn("ImageFlip/enabled", self.by_path)
+        self.assertEqual(style.linked_enabled_path, "ImageFlip/enabled")
+        self.assertEqual(style.off_value, "OFF")
+        self.assertFalse(style.off_value_written)
+        self.assertEqual(style.options, ["OFF", "LEFTRIGHT", "UPDOWN", "CENTER"])
+        self.assertEqual(style.value, "OFF")
+
+    def test_image_flip_on_reports_its_direction(self):
+        values = VALUES.replace(
+            b"<enabled>false</enabled>\n</ImageFlip>",
+            b"<enabled>true</enabled>\n<ImageFlipStyle>LEFTRIGHT</ImageFlipStyle>\n</ImageFlip>",
+        )
+        self.assertNotEqual(values, VALUES)
+        style = by_path(parse_image_capabilities(CAPS, values))["ImageFlip/ImageFlipStyle"]
+        self.assertEqual(style.value, "LEFTRIGHT")
+
+    def test_blc_off_value_is_written(self):
+        self.assertTrue(self.by_path["BLC/BLCMode"].off_value_written)
 
     def test_structural_paths_excluded(self):
         for path in ("id", "enabled", "videoInputID"):
@@ -91,11 +116,11 @@ class TestParseImageCapabilities(unittest.TestCase):
 
     def test_unmerged_enabled_switches_remain(self):
         # No sibling select with an "off" option, so these stay switches.
-        for path in ("HLC/enabled", "ImageFlip/enabled", "corridor/enabled"):
+        for path in ("HLC/enabled", "corridor/enabled"):
             self.assertEqual(self.by_path[path].type, ImageSettingType.SWITCH)
 
     def test_total_count(self):
-        self.assertEqual(len(self.settings), 30)
+        self.assertEqual(len(self.settings), 29)
 
 
 class TestParseEdgeCases(unittest.TestCase):
@@ -187,7 +212,7 @@ class TestParseVariants(unittest.TestCase):
 
     def test_accepts_text_input(self):
         settings = parse_image_capabilities(CAPS.decode("utf-8"), VALUES.decode("utf-8"))
-        self.assertEqual(len(settings), 30)
+        self.assertEqual(len(settings), 29)
 
     def test_namespace_agnostic(self):
         other = CAPS.replace(
@@ -244,7 +269,7 @@ class TestISAPIClientImage(unittest.TestCase):
             RawResponse(200, CAPS), RawResponse(200, VALUES)
         ) as request_raw:
             settings = self.client.get_image_settings(channel=1)
-        self.assertEqual(len(settings), 30)
+        self.assertEqual(len(settings), 29)
         self.assertEqual(
             [c.args for c in request_raw.call_args_list],
             [

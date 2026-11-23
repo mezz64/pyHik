@@ -111,6 +111,12 @@ class FakeCamera:
                 return self._reply(resp, 403, False, self.hlc_on_code)
             if enabling_wdr and (self._enabled("BLC/enabled") or self._enabled("HLC/enabled")):
                 return self._reply(resp, 400, False, "MutexWithWDR")
+            if (
+                get_text(new, "ImageFlip/enabled") == "true"
+                and get_text(new, "ImageFlip/ImageFlipStyle") is None
+            ):
+                # Flip on needs its direction.
+                return self._reply(resp, 400, False, "badXmlContent")
             for flag in ("BLC/enabled", "HLC/enabled"):
                 if get_text(new, flag) == "true" and not self._enabled(flag) and self._wdr_on():
                     return self._reply(resp, 400, False, "WDRNotDisable")
@@ -661,6 +667,59 @@ class TestLinkedSettings(unittest.TestCase):
         camera = FakeCamera(VALUES.replace("<BLC ", "<BLCX ").replace("</BLC>", "</BLCX>"))
         result = client_for(camera).set_image_linked_setting(self.blc, "UP")
         self.assertEqual(result.sub_status, "pathNotFound")
+
+
+
+class TestImageFlip(unittest.TestCase):
+    """Flip and its direction, written as one linked select."""
+
+    FLIP_OFF = "<enabled>false</enabled>\n</ImageFlip>"
+    FLIP_ON = (
+        "<enabled>true</enabled>\n<ImageFlipStyle>UPDOWN</ImageFlipStyle>\n</ImageFlip>"
+    )
+
+    def setUp(self):
+        self.style = {
+            s.path: s for s in parse_image_capabilities(CAPS, VALUES.encode())
+        }["ImageFlip/ImageFlipStyle"]
+
+    def test_flip_alone_is_refused_by_the_device(self):
+        # What the separate switch used to send.
+        camera = FakeCamera()
+        result = client_for(camera).put_image_settings({"ImageFlip/enabled": "true"})
+        self.assertEqual(result.sub_status, "badXmlContent")
+
+    def test_a_direction_turns_flip_on_with_it(self):
+        camera = FakeCamera()
+        result = client_for(camera).set_image_linked_setting(self.style, "LEFTRIGHT")
+        self.assertTrue(result.success)
+        self.assertIn(
+            "<enabled>true</enabled>\n<ImageFlipStyle>LEFTRIGHT</ImageFlipStyle>",
+            camera.xml,
+        )
+
+    def test_another_direction_while_on(self):
+        camera = FakeCamera(VALUES.replace(self.FLIP_OFF, self.FLIP_ON))
+        result = client_for(camera).set_image_linked_setting(self.style, "CENTER")
+        self.assertTrue(result.success)
+        self.assertEqual(get_text(camera.xml, "ImageFlip/ImageFlipStyle"), "CENTER")
+        self.assertEqual(get_text(camera.xml, "ImageFlip/enabled"), "true")
+
+    def test_off_writes_only_the_flag(self):
+        camera = FakeCamera(VALUES.replace(self.FLIP_OFF, self.FLIP_ON))
+        result = client_for(camera).set_image_linked_setting(self.style, "OFF")
+        self.assertTrue(result.success)
+        self.assertEqual(get_text(camera.xml, "ImageFlip/enabled"), "false")
+        # The direction is left as it was: OFF is not a value of the device.
+        self.assertEqual(get_text(camera.xml, "ImageFlip/ImageFlipStyle"), "UPDOWN")
+        self.assertNotIn(">OFF<", camera.puts[-1][1])
+
+    def test_off_while_already_off(self):
+        camera = FakeCamera()
+        result = client_for(camera).set_image_linked_setting(self.style, "OFF")
+        self.assertTrue(result.success)
+        self.assertEqual(get_text(camera.xml, "ImageFlip/enabled"), "false")
+        self.assertIsNone(get_text(camera.xml, "ImageFlip/ImageFlipStyle"))
 
 
 HTML_ERROR_PAGE = b"<html><head><title>401</title></head><body>Unauthorized</body></html>"

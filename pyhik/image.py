@@ -60,6 +60,10 @@ class ImageSetting:
             flag (e.g. ``BLC/BLCMode`` -> ``BLC/enabled``), the path of that
             flag. The separate switch for it is not reported.
         off_value: For a linked select, the option that means "disabled".
+        off_value_written: Whether choosing ``off_value`` also writes it to
+            the select's own element. False when the device has no such
+            option and pyhik added it, as for ``ImageFlip/ImageFlipStyle``:
+            only the flag is written then.
     """
 
     path: str
@@ -70,6 +74,7 @@ class ImageSetting:
     value: Optional[str] = None
     linked_enabled_path: Optional[str] = None
     off_value: Optional[str] = None
+    off_value_written: bool = True
 
 
 def _strip_ns(tag: str) -> str:
@@ -203,6 +208,15 @@ def _is_off(option: str) -> bool:
     return option.lower() == "close"
 
 
+# The off option pyhik adds to a mode that has none, but that the device
+# requires while the feature is on, like the camera UI's "Mirror: OFF".
+ADDED_OFF_VALUE = "OFF"
+# Such modes, by lowercase path: the device omits the mode while its flag is
+# false, and refuses the flag set to true without it (badXmlContent), so the
+# two can only be written together.
+_MODES_REQUIRED_WHEN_ON = frozenset({"imageflip/imageflipstyle"})
+
+
 def _merge_enabled_mode(
     settings: List[ImageSetting], current: Dict[str, str], have_values: bool
 ) -> None:
@@ -210,7 +224,8 @@ def _merge_enabled_mode(
 
     The mode element is usually absent from the current values while the
     feature is disabled, so a linked select reports its off value in that
-    case.
+    case. A mode the device requires while the feature is on, but that has no
+    off option (the image flip direction), gets :data:`ADDED_OFF_VALUE`.
     """
     switches: Dict[str, ImageSetting] = {}
     selects: Dict[str, ImageSetting] = {}
@@ -220,8 +235,9 @@ def _merge_enabled_mode(
             continue
         if setting.type is ImageSettingType.SWITCH and leaf.lower() == "enabled":
             switches[parent] = setting
-        elif setting.type is ImageSettingType.SELECT and any(
-            _is_off(o) for o in setting.options
+        elif setting.type is ImageSettingType.SELECT and (
+            any(_is_off(o) for o in setting.options)
+            or setting.path.lower() in _MODES_REQUIRED_WHEN_ON
         ):
             # If several qualify, the first in document order is linked.
             selects.setdefault(parent, setting)
@@ -231,7 +247,11 @@ def _merge_enabled_mode(
         if select is None:
             continue
         # Kept in the device's spelling, which is what it expects back.
-        off = next(o for o in select.options if _is_off(o))
+        off = next((o for o in select.options if _is_off(o)), None)
+        if off is None:
+            off = ADDED_OFF_VALUE
+            select.options.insert(0, off)
+            select.off_value_written = False
         select.linked_enabled_path = switch.path
         select.off_value = off
         if have_values and current.get(switch.path, "").lower() != "true":
