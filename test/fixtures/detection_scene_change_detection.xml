@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SceneChangeDetection version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<id>1</id>
+<enabled>false</enabled>
+<sensitivityLevel>50</sensitivityLevel>
+</SceneChangeDetection>

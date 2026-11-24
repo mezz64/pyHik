@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FieldDetection version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<id>1</id>
+<enabled>true</enabled>
+<startTriggerTime>500</startTriggerTime>
+<endTriggerTime>500</endTriggerTime>
+<normalizedScreenSize>
+<normalizedScreenWidth>1000</normalizedScreenWidth>
+<normalizedScreenHeight>1000</normalizedScreenHeight>
+</normalizedScreenSize>
+<FieldDetectionRegionList size="1" >
+<FieldDetectionRegion version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<id>1</id>
+<enabled>false</enabled>
+<sensitivityLevel>50</sensitivityLevel>
+<timeThreshold>1</timeThreshold>
+<RegionCoordinatesList>
+<RegionCoordinates>
+<positionX>439</positionX>
+<positionY>269</positionY>
+</RegionCoordinates>
+<RegionCoordinates>
+<positionX>997</positionX>
+<positionY>593</positionY>
+</RegionCoordinates>
+<RegionCoordinates>
+<positionX>609</positionX>
+<positionY>17</positionY>
+</RegionCoordinates>
+<RegionCoordinates>
+<positionX>314</positionX>
+<positionY>5</positionY>
+</RegionCoordinates>
+</RegionCoordinatesList>
+</FieldDetectionRegion>
+</FieldDetectionRegionList>
+<isSupportMultiScene>false</isSupportMultiScene>
+</FieldDetection>

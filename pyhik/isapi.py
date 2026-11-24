@@ -27,6 +27,7 @@ from pyhik.image import (
     apply_enable_and_mode,
     apply_image_changes,
     conflict_resolution,
+    find_by_path,
     parse_image_capabilities,
     parse_image_channels,
     parse_image_values,
@@ -63,9 +64,27 @@ EVENT_ENDPOINTS: Dict[str, str] = {
     "regionExiting": "/ISAPI/Smart/RegionExiting/{channel}",
     "tamperDetection": "/ISAPI/System/Video/inputs/channels/{channel}/tamperDetection",
     "sceneChangeDetection": "/ISAPI/Smart/SceneChangeDetection/{channel}",
+    "videoLoss": "/ISAPI/System/Video/inputs/channels/{channel}/videoLoss",
     "PIR": "/ISAPI/WLAlarm/PIR",
     "faceDetection": "/ISAPI/Smart/FaceDetect/{channel}",
 }
+
+# The detections of a video channel that can be turned on and off, by their
+# names in EVENT_ENDPOINTS. Each document has an ``enabled`` flag right below
+# its root; the regions or lines inside it have their own, left alone.
+DETECTIONS: Tuple[str, ...] = (
+    "motionDetection",
+    "lineDetection",
+    "fieldDetection",
+    "regionEntrance",
+    "regionExiting",
+    "tamperDetection",
+    "sceneChangeDetection",
+    "videoLoss",
+)
+# What a device answers for a detection it does not have. A 403 with one of
+# these is not about the credentials.
+_NOT_SUPPORTED_SUB_STATUSES = frozenset({"notSupport", "invalidOperation"})
 
 # Request timeout
 REQUEST_TIMEOUT = 20
@@ -800,54 +819,146 @@ class ISAPIClient:
         self.request(HTTPMethod.PUT, ENDPOINT_HOLIDAYS, data=data)
 
     def get_event_states(self) -> List[EventState]:
-        """Get event detection states for all channels."""
+        """Get event detection states for all channels.
+
+        A detection the device does not have, or that fails otherwise, is
+        left out. Rejected credentials raise :class:`ISAPIAuthError`: going on
+        would send them again for every detection.
+        """
         states = []
         cameras = self.get_cameras()
 
         for camera in cameras:
             channel = camera.id
-            for event_type, endpoint_template in EVENT_ENDPOINTS.items():
-                endpoint = endpoint_template.format(channel=channel)
+            for event_type in EVENT_ENDPOINTS:
                 try:
-                    response = self.request(HTTPMethod.GET, endpoint)
-                    for value in response.values():
-                        if isinstance(value, dict) and "enabled" in value:
-                            enabled = value.get("enabled", "false").lower() == "true"
-                            states.append(
-                                EventState(
-                                    id=f"{event_type}_{channel}",
-                                    channel=channel,
-                                    type=event_type,
-                                    enabled=enabled,
-                                )
-                            )
-                            break
+                    enabled = self.get_detection_enabled(event_type, channel)
+                except ISAPIAuthError:
+                    raise
                 except ISAPIError:
                     continue
+                states.append(
+                    EventState(
+                        id=f"{event_type}_{channel}",
+                        channel=channel,
+                        type=event_type,
+                        enabled=enabled,
+                    )
+                )
 
         return states
 
     def set_event_enabled(
         self, event_type: str, channel: int, enabled: bool
     ) -> None:
-        """Set event detection enabled state."""
-        endpoint_template = EVENT_ENDPOINTS.get(event_type)
-        if not endpoint_template:
+        """Set event detection enabled state.
+
+        Like :meth:`set_detection_enabled`, but raises :class:`ISAPIError`
+        when the device refuses the change.
+        """
+        if event_type not in EVENT_ENDPOINTS:
             raise ISAPIError(f"Unknown event type: {event_type}")
+        result = self.set_detection_enabled(event_type, enabled, channel)
+        if not result.success:
+            raise ISAPIError(
+                f"Cannot set {event_type}: {result.sub_status}",
+                result.status_code,
+                result.sub_status,
+            )
 
-        endpoint = endpoint_template.format(channel=channel)
+    # ------------------------------------------------------------------
+    # Detections: on and off
+    # ------------------------------------------------------------------
 
+    @staticmethod
+    def _detection_endpoint(detection: str, channel: Union[int, str]) -> str:
+        template = EVENT_ENDPOINTS.get(detection)
+        if template is None:
+            raise ValueError(f"Unknown detection: {detection}")
+        # The ID is one path segment, whatever the caller passes.
+        return template.format(channel=quote(str(channel), safe=""))
+
+    def _get_detection_xml(self, endpoint: str) -> str:
+        """GET a detection document; one the device does not have is not
+        supported, even when it answers 403."""
+        response = self.request_raw("GET", endpoint)
+        self._raise_if_unauthorized(response)
+        status = response.status_code
+        sub_status = parse_sub_status(response.content)
+        if not response.ok:
+            if status in (404, 501) or sub_status in _NOT_SUPPORTED_SUB_STATUSES:
+                raise ISAPINotSupportedError(
+                    f"Not supported by the device: {endpoint}", status, sub_status
+                )
+            if status == 403:
+                raise ISAPIAuthError("Insufficient permissions", status, sub_status)
+            raise ISAPIError(
+                f"Request failed with status {status}", status, sub_status
+            )
         try:
-            response = self.request(HTTPMethod.GET, endpoint)
-        except ISAPIError as err:
-            raise ISAPIError(f"Cannot get event config: {err}") from err
+            return response.content.decode("utf-8")
+        except UnicodeDecodeError as err:
+            raise ISAPIError(f"Invalid detection XML: {err}") from err
 
-        for value in response.values():
-            if isinstance(value, dict) and "enabled" in value:
-                value["enabled"] = "true" if enabled else "false"
-                break
+    def get_detection_enabled(
+        self, detection: str, channel: Union[int, str] = 1
+    ) -> bool:
+        """Return whether a detection of a video channel is on.
 
-        self.request(HTTPMethod.PUT, endpoint, data=response)
+        ``detection`` is one of :data:`DETECTIONS` (or another name in
+        ``EVENT_ENDPOINTS``). Only the flag right below the document's root
+        is read, the one the camera UI's "Enable" checkbox sets.
+
+        Raises:
+            ValueError: Unknown detection.
+            ISAPIConnectionError: Connection failed.
+            ISAPIAuthError: 401, or not permitted.
+            ISAPINotSupportedError: The device does not have it: 404, 501,
+                ``notSupport`` or ``invalidOperation``, also with a 403.
+            ISAPIError: Other errors, a document that is not XML, or one
+                without the flag.
+        """
+        endpoint = self._detection_endpoint(detection, channel)
+        xml = self._get_detection_xml(endpoint)
+        try:
+            flag = find_by_path(ET.fromstring(xml.encode("utf-8")), "enabled")
+        except ET.ParseError as err:
+            raise ISAPIError(f"Invalid detection XML: {err}") from err
+        if flag is None:
+            raise ISAPIError(f"No enabled flag in {endpoint}")
+        return (flag.text or "").strip().lower() == "true"
+
+    def set_detection_enabled(
+        self, detection: str, enabled: bool, channel: Union[int, str] = 1
+    ) -> ImageWriteResult:
+        """Turn a detection of a video channel on or off.
+
+        Reads the document and sends it back with only the flag right below
+        its root changed: the regions, lines and other settings in it are
+        kept byte for byte. Nothing is sent when it is already so. A document
+        without the flag gives ``pathNotFound``, and sends nothing.
+
+        Raises:
+            ValueError: Unknown detection.
+            ISAPIConnectionError: Connection failed.
+            ISAPIAuthError: 401 to the read or the write, or the read refused
+                for lack of permission.
+            ISAPINotSupportedError: The device does not have it.
+            ISAPIError: The document could not be read or parsed.
+        """
+        endpoint = self._detection_endpoint(detection, channel)
+        original = self._get_detection_xml(endpoint)
+        try:
+            edited, missing = apply_image_changes(
+                original, {"enabled": "true" if enabled else "false"}
+            )
+        except ET.ParseError as err:
+            raise ISAPIError(f"Invalid detection XML: {err}") from err
+        if missing:
+            return ImageWriteResult(False, 0, "pathNotFound")
+        if edited == original:
+            return ImageWriteResult(True, 200, "ok")
+        return self._put_image_xml(endpoint, edited)
 
     def get_snapshot(
         self,

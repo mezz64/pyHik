@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<LineDetection>
+<id>1</id>
+<enabled>true</enabled>
+<normalizedScreenSize>
+<normalizedScreenWidth>1000</normalizedScreenWidth>
+<normalizedScreenHeight>1000</normalizedScreenHeight>
+</normalizedScreenSize>
+<LineItemList size="1" >
+<LineItem>
+<id>1</id>
+<enabled>false</enabled>
+<sensitivityLevel>50</sensitivityLevel>
+<directionSensitivity>any</directionSensitivity>
+<CoordinatesList>
+<Coordinates>
+<positionX>59</positionX>
+<positionY>104</positionY>
+</Coordinates>
+<Coordinates>
+<positionX>992</positionX>
+<positionY>585</positionY>
+</Coordinates>
+</CoordinatesList>
+</LineItem>
+</LineItemList>
+<isSupportMultiScene>false</isSupportMultiScene>
+<recogRuleType>vectorMode</recogRuleType>
+</LineDetection>

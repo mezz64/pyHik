@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ResponseStatus version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<requestURL>/ISAPI/Smart/RegionEntrance/1</requestURL>
+<statusCode>4</statusCode>
+<statusString>Invalid Operation</statusString>
+<subStatusCode>notSupport</subStatusCode>
+</ResponseStatus>
