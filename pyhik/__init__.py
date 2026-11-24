@@ -24,6 +24,8 @@ from pyhik.isapi import (
     CameraInfo,
     OutputPort,
     InputPort,
+    IOPortState,
+    Holiday,
     EventState,
     DeviceCapabilities,
 )
@@ -63,6 +65,8 @@ __all__ = [
     'CameraInfo',
     'OutputPort',
     'InputPort',
+    'IOPortState',
+    'Holiday',
     'EventState',
     'DeviceCapabilities',
     # Image settings

@@ -11,6 +11,7 @@ Licensed under the MIT license.
 from dataclasses import dataclass, field, replace
 from enum import Enum
 import logging
+import re
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 import xml.etree.ElementTree as ET
 from urllib.parse import quote, urlparse, urlunparse
@@ -25,6 +26,8 @@ from pyhik.image import (
     ImageSetting,
     ImageWriteResult,
     apply_enable_and_mode,
+    _child_text,
+    _strip_ns,
     apply_image_changes,
     conflict_resolution,
     find_by_path,
@@ -46,6 +49,10 @@ ENDPOINT_IO_INPUTS = "/ISAPI/System/IO/inputs"
 ENDPOINT_IO_OUTPUTS = "/ISAPI/System/IO/outputs"
 ENDPOINT_EVENT_NOTIFICATION = "/ISAPI/Event/notification/httpHosts"
 ENDPOINT_HOLIDAYS = "/ISAPI/System/Holidays"
+ENDPOINT_IO_STATUS = "/ISAPI/System/IO/status"
+ENDPOINT_IO_PROXY_INPUTS = "/ISAPI/ContentMgmt/IOProxy/inputs"
+ENDPOINT_IO_PROXY_OUTPUTS = "/ISAPI/ContentMgmt/IOProxy/outputs"
+ENDPOINT_IO_PROXY_STATUS = "/ISAPI/ContentMgmt/IOProxy/status"
 ENDPOINT_REBOOT = "/ISAPI/System/reboot"
 ENDPOINT_EVENT_TRIGGERS = "/ISAPI/Event/triggers"
 ENDPOINT_SMART_CAPABILITIES = "/ISAPI/Smart/capabilities"
@@ -85,6 +92,10 @@ DETECTIONS: Tuple[str, ...] = (
 # What a device answers for a detection it does not have. A 403 with one of
 # these is not about the credentials.
 _NOT_SUPPORTED_SUB_STATUSES = frozenset({"notSupport", "invalidOperation"})
+# One holiday in the raw holiday list: <holiday>, not <holidayName>.
+_HOLIDAY_ELEMENT = re.compile(
+    r"<(?:[\w.-]+:)?holiday\b[^>]*>.*?</(?:[\w.-]+:)?holiday\s*>", re.S
+)
 
 # Request timeout
 REQUEST_TIMEOUT = 20
@@ -218,10 +229,40 @@ class OutputPort:
 
 @dataclass
 class InputPort:
-    """Input port information."""
+    """Input port information.
+
+    ``enabled`` is whether the input raises alarms, when the list gives it.
+    """
 
     id: str
     name: str
+    enabled: Optional[bool] = None
+
+
+@dataclass
+class IOPortState:
+    """The state of an alarm input or output: whether it is active now."""
+
+    id: str
+    type: str  # "input" or "output"
+    active: bool
+
+
+@dataclass
+class Holiday:
+    """A holiday of the device: dates that the recording and arming schedules
+    treat as holidays, while it is enabled.
+
+    ``start`` and ``end`` are the dates of a holiday by date (``mode`` is
+    ``date``), as the device gives them; None for one by week or by month.
+    """
+
+    id: str
+    name: str
+    enabled: bool
+    mode: str
+    start: Optional[str] = None
+    end: Optional[str] = None
 
 
 @dataclass
@@ -721,102 +762,326 @@ class ISAPIClient:
 
         return list(cameras_dict.values())
 
-    def get_output_ports(self) -> List[OutputPort]:
-        """Get output port information."""
+    def _io_ports(self, endpoint: str, tag: str) -> List[ET.Element]:
+        """Return the ports of a port list; none if the device has no such
+        ports. A port without an ID is left out."""
         try:
-            response = self.request(HTTPMethod.GET, ENDPOINT_IO_OUTPUTS)
-        except ISAPINotFoundError:
+            root = self._get_supported_root(endpoint)
+        except ISAPINotSupportedError:
             return []
-
-        outputs = response.get("IOOutputPortList", {}).get("IOOutputPort", [])
-        if isinstance(outputs, dict):
-            outputs = [outputs]
-
         return [
-            OutputPort(
-                id=output.get("id", ""),
-                name=output.get("outputName", f"Output {output.get('id', '')}"),
-            )
-            for output in outputs
+            port
+            for port in root
+            if _strip_ns(port.tag) == tag and _child_text(port, "id")
         ]
 
-    def get_input_ports(self) -> List[InputPort]:
-        """Get input port information."""
-        try:
-            response = self.request(HTTPMethod.GET, ENDPOINT_IO_INPUTS)
-        except ISAPINotFoundError:
-            return []
+    def get_output_ports(self, proxy: bool = False) -> List[OutputPort]:
+        """Get the alarm outputs; none if the device has none.
 
-        inputs = response.get("IOInputPortList", {}).get("IOInputPort", [])
-        if isinstance(inputs, dict):
-            inputs = [inputs]
+        With ``proxy=True``, those of the cameras on an NVR's digital
+        channels (``/ISAPI/ContentMgmt/IOProxy/outputs``). Their IDs are the
+        channel times 100 plus the camera's own port: 203 for port 3 of the
+        camera on channel 2.
 
-        return [
-            InputPort(
-                id=inp.get("id", ""),
-                name=inp.get("inputName", f"Input {inp.get('id', '')}"),
+        Raises:
+            ISAPIConnectionError: Connection failed.
+            ISAPIAuthError: 401, or not permitted.
+            ISAPIError: Other errors, or a list that is not XML.
+        """
+        endpoint, tag = (
+            (ENDPOINT_IO_PROXY_OUTPUTS, "IOProxyOutputPort")
+            if proxy
+            else (ENDPOINT_IO_OUTPUTS, "IOOutputPort")
+        )
+        ports = []
+        for port in self._io_ports(endpoint, tag):
+            port_id = _child_text(port, "id")
+            name = _child_text(port, "name") or _child_text(port, "outputName")
+            ports.append(OutputPort(id=port_id, name=name or f"Output {port_id}"))
+        return ports
+
+    def get_input_ports(self, proxy: bool = False) -> List[InputPort]:
+        """Get the alarm inputs, and whether each raises alarms; none if the
+        device has none.
+
+        With ``proxy=True``, those of the cameras on an NVR's digital
+        channels (``/ISAPI/ContentMgmt/IOProxy/inputs``), with IDs as for
+        :meth:`get_output_ports`. They are read and set through
+        :meth:`get_input_enabled` and :meth:`set_input_enabled` with that ID.
+
+        Raises:
+            ISAPIConnectionError: Connection failed.
+            ISAPIAuthError: 401, or not permitted.
+            ISAPIError: Other errors, or a list that is not XML.
+        """
+        endpoint, tag = (
+            (ENDPOINT_IO_PROXY_INPUTS, "IOProxyInputPort")
+            if proxy
+            else (ENDPOINT_IO_INPUTS, "IOInputPort")
+        )
+        ports = []
+        for port in self._io_ports(endpoint, tag):
+            port_id = _child_text(port, "id")
+            name = _child_text(port, "name") or _child_text(port, "inputName")
+            enabled = _child_text(port, "enabled").lower()
+            ports.append(
+                InputPort(
+                    id=port_id,
+                    name=name or f"Input {port_id}",
+                    enabled={"true": True, "false": False}.get(enabled),
+                )
             )
-            for inp in inputs
-        ]
+        return ports
+
+    def get_io_status(self, proxy: bool = False) -> List[IOPortState]:
+        """Get whether each alarm input and output is active, in one request.
+
+        ``/ISAPI/System/IO/status``; with ``proxy=True`` the ports of the
+        cameras on an NVR's digital channels (``/ISAPI/ContentMgmt/IOProxy/status``).
+
+        Raises:
+            ISAPIConnectionError: Connection failed.
+            ISAPIAuthError: 401, or not permitted.
+            ISAPINotSupportedError: The device does not give it.
+            ISAPIError: Other errors, or a list that is not XML.
+        """
+        endpoint = ENDPOINT_IO_PROXY_STATUS if proxy else ENDPOINT_IO_STATUS
+        states = []
+        for status in self._get_supported_root(endpoint):
+            if _strip_ns(status.tag) != "IOPortStatus":
+                continue
+            port_id = _child_text(status, "ioPortID")
+            if not port_id:
+                continue
+            states.append(
+                IOPortState(
+                    id=port_id,
+                    type=_child_text(status, "ioPortType").lower(),
+                    active=_child_text(status, "ioState").lower() == "active",
+                )
+            )
+        return states
+
+    @staticmethod
+    def _port_endpoint(base: str, port_id: str, suffix: str = "") -> str:
+        # The ID is one path segment, whatever the caller passes.
+        return f"{base}/{quote(str(port_id), safe='')}{suffix}"
+
+    def get_output_active(self, output_id: str) -> bool:
+        """Return whether an alarm output is active.
+
+        Raises:
+            ISAPIConnectionError: Connection failed.
+            ISAPIAuthError: 401, or not permitted.
+            ISAPINotSupportedError: The device does not have it.
+            ISAPIError: Other errors, or a status without its state.
+        """
+        return self._port_active(ENDPOINT_IO_OUTPUTS, output_id)
+
+    def get_input_active(self, input_id: str) -> bool:
+        """Return whether an alarm input is active now: its signal is on.
+
+        Raises:
+            ISAPIConnectionError: Connection failed.
+            ISAPIAuthError: 401, or not permitted.
+            ISAPINotSupportedError: The device does not have it.
+            ISAPIError: Other errors, or a status without its state.
+        """
+        return self._port_active(ENDPOINT_IO_INPUTS, input_id)
+
+    def _port_active(self, base: str, port_id: str) -> bool:
+        endpoint = self._port_endpoint(base, port_id, "/status")
+        state = find_by_path(self._get_supported_root(endpoint), "ioState")
+        if state is None:
+            raise ISAPIError(f"No ioState in {endpoint}")
+        return (state.text or "").strip().lower() == "active"
+
+    def set_output_active(self, output_id: str, active: bool) -> ImageWriteResult:
+        """Make an alarm output active or inactive.
+
+        An output set to pulse on the device goes back by itself once its
+        pulse ends.
+
+        Raises:
+            ISAPIConnectionError: Connection failed.
+            ISAPIAuthError: 401.
+        """
+        endpoint = self._port_endpoint(ENDPOINT_IO_OUTPUTS, output_id, "/trigger")
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<IOPortData version="2.0" xmlns="http://www.isapi.org/ver20/XMLSchema">'
+            f"<outputState>{'high' if active else 'low'}</outputState>"
+            "</IOPortData>"
+        )
+        return self._put_image_xml(endpoint, body)
+
+    def get_input_enabled(self, input_id: str) -> bool:
+        """Return whether an alarm input is enabled: whether it raises alarms.
+
+        Raises:
+            ISAPIConnectionError: Connection failed.
+            ISAPIAuthError: 401, or not permitted.
+            ISAPINotSupportedError: The device does not have it.
+            ISAPIError: Other errors, or a port without the flag.
+        """
+        return self._read_flag(
+            self._port_endpoint(ENDPOINT_IO_INPUTS, input_id), "enabled"
+        )
+
+    def set_input_enabled(self, input_id: str, enabled: bool) -> ImageWriteResult:
+        """Enable or disable an alarm input.
+
+        Only its ``enabled`` flag is changed: the rest of the port, such as
+        its name and how it triggers, is sent back as read.
+
+        Raises:
+            ISAPIConnectionError: Connection failed.
+            ISAPIAuthError: 401 to the read or the write, or the read refused
+                for lack of permission.
+            ISAPINotSupportedError: The device does not have it.
+            ISAPIError: The port could not be read or parsed.
+        """
+        return self._write_flag(
+            self._port_endpoint(ENDPOINT_IO_INPUTS, input_id), "enabled", enabled
+        )
+
+    def get_holidays(self) -> List[Holiday]:
+        """Get the holidays of the device; none if it has none.
+
+        Each one is a set of dates that the recording and arming schedules
+        treat as holidays while it is enabled.
+
+        Raises:
+            ISAPIConnectionError: Connection failed.
+            ISAPIAuthError: 401, or not permitted.
+            ISAPIError: Other errors, or a list that is not XML.
+        """
+        try:
+            root = self._get_supported_root(ENDPOINT_HOLIDAYS)
+        except ISAPINotSupportedError:
+            return []
+        holidays = []
+        for holiday in root:
+            if _strip_ns(holiday.tag) != "holiday":
+                continue
+            holiday_id = _child_text(holiday, "id")
+            if not holiday_id:
+                continue
+            mode = _child_text(holiday, "holidayMode")
+            dates = find_by_path(holiday, "holidayDate")
+            holidays.append(
+                Holiday(
+                    id=holiday_id,
+                    name=_child_text(holiday, "holidayName") or f"Holiday {holiday_id}",
+                    enabled=_child_text(holiday, "enabled").lower() == "true",
+                    mode=mode,
+                    start=(
+                        _child_text(dates, "startDate") or None
+                        if dates is not None and mode == "date"
+                        else None
+                    ),
+                    end=(
+                        _child_text(dates, "endDate") or None
+                        if dates is not None and mode == "date"
+                        else None
+                    ),
+                )
+            )
+        return holidays
+
+    def set_holiday_enabled(self, holiday_id: str, enabled: bool) -> ImageWriteResult:
+        """Enable or disable one holiday of the device.
+
+        Written through ``/ISAPI/System/Holidays/<id>``; a device without it
+        gets the list back instead, with only that holiday's flag changed.
+        Either way the rest is sent back as read, and nothing is sent when it
+        is already so. A holiday that is not in the list gives
+        ``pathNotFound``.
+
+        Raises:
+            ISAPIConnectionError: Connection failed.
+            ISAPIAuthError: 401 to the read or the write, or the read refused
+                for lack of permission.
+            ISAPINotSupportedError: The device has no holidays.
+            ISAPIError: A document could not be read or parsed.
+        """
+        try:
+            return self._write_flag(
+                self._port_endpoint(ENDPOINT_HOLIDAYS, holiday_id), "enabled", enabled
+            )
+        except ISAPINotSupportedError:
+            pass
+        original = self._get_supported_xml(ENDPOINT_HOLIDAYS)
+        value = "true" if enabled else "false"
+        for match in _HOLIDAY_ELEMENT.finditer(original):
+            item = match.group(0)
+            try:
+                found = _child_text(ET.fromstring(item.encode("utf-8")), "id")
+                if found != holiday_id:
+                    continue
+                edited_item, missing = apply_image_changes(item, {"enabled": value})
+            except ET.ParseError as err:
+                raise ISAPIError(f"Invalid XML from {ENDPOINT_HOLIDAYS}: {err}") from err
+            if missing:
+                return ImageWriteResult(False, 0, "pathNotFound")
+            if edited_item == item:
+                return ImageWriteResult(True, 200, "ok")
+            edited = original[: match.start()] + edited_item + original[match.end() :]
+            return self._put_image_xml(ENDPOINT_HOLIDAYS, edited)
+        return ImageWriteResult(False, 0, "pathNotFound")
 
     def get_output_state(self, output_id: str) -> bool:
-        """Get output port state."""
+        """Get output port state.
+
+        False when it cannot be read, but rejected credentials raise
+        :class:`ISAPIAuthError`.
+        """
         try:
-            response = self.request(
-                HTTPMethod.GET, f"{ENDPOINT_IO_OUTPUTS}/{output_id}/status"
-            )
-            status = response.get("IOPortStatus", {})
-            return status.get("ioState", "inactive").lower() == "active"
+            return self.get_output_active(output_id)
+        except ISAPIAuthError:
+            raise
         except ISAPIError:
             return False
 
     def set_output_state(self, output_id: str, state: bool) -> None:
-        """Set output port state."""
-        data = {
-            "IOPortData": {
-                "@version": "2.0",
-                "@xmlns": "http://www.isapi.org/ver20/XMLSchema",
-                "outputState": "high" if state else "low",
-            }
-        }
-        self.request(
-            HTTPMethod.PUT, f"{ENDPOINT_IO_OUTPUTS}/{output_id}/trigger", data=data
-        )
+        """Set output port state; raises ISAPIError if the device refuses."""
+        result = self.set_output_active(output_id, state)
+        if not result.success:
+            raise ISAPIError(
+                f"Cannot set output {output_id}: {result.sub_status}",
+                result.status_code,
+                result.sub_status,
+            )
 
     def get_holiday_mode_enabled(self) -> bool:
-        """Get holiday mode status."""
+        """Get holiday mode status: whether any holiday is enabled.
+
+        False when it cannot be read, but rejected credentials raise
+        :class:`ISAPIAuthError`.
+        """
         try:
-            response = self.request(HTTPMethod.GET, ENDPOINT_HOLIDAYS)
-            holidays = response.get("HolidayList", {}).get("holiday", [])
-            if isinstance(holidays, dict):
-                holidays = [holidays]
-            for h in holidays:
-                enabled = h.get("enabled", "false")
-                if isinstance(enabled, dict):
-                    enabled = enabled.get("#text", "false")
-                if str(enabled).lower() == "true":
-                    return True
-            return False
+            return any(holiday.enabled for holiday in self.get_holidays())
+        except ISAPIAuthError:
+            raise
         except ISAPIError:
             return False
 
     def set_holiday_mode_enabled(self, enabled: bool) -> None:
-        """Set holiday mode status."""
-        try:
-            response = self.request(HTTPMethod.GET, ENDPOINT_HOLIDAYS)
-        except ISAPIError:
-            return
+        """Set holiday mode status (the first holiday).
 
-        holidays = response.get("HolidayList", {}).get("holiday", [])
-        if isinstance(holidays, dict):
-            holidays = [holidays]
-
+        Nothing is sent when the device has no holiday. Raises ISAPIError if
+        the device refuses the change.
+        """
+        holidays = self.get_holidays()
         if not holidays:
             return
-
-        holidays[0]["enabled"] = "true" if enabled else "false"
-        data = {"HolidayList": {"holiday": holidays}}
-        self.request(HTTPMethod.PUT, ENDPOINT_HOLIDAYS, data=data)
+        result = self.set_holiday_enabled(holidays[0].id, enabled)
+        if not result.success:
+            raise ISAPIError(
+                f"Cannot set holiday mode: {result.sub_status}",
+                result.status_code,
+                result.sub_status,
+            )
 
     def get_event_states(self) -> List[EventState]:
         """Get event detection states for all channels.
@@ -878,9 +1143,9 @@ class ISAPIClient:
         # The ID is one path segment, whatever the caller passes.
         return template.format(channel=quote(str(channel), safe=""))
 
-    def _get_detection_xml(self, endpoint: str) -> str:
-        """GET a detection document; one the device does not have is not
-        supported, even when it answers 403."""
+    def _get_supported_xml(self, endpoint: str) -> str:
+        """GET a document; one the device does not have is not supported, even
+        when it answers 403."""
         response = self.request_raw("GET", endpoint)
         self._raise_if_unauthorized(response)
         status = response.status_code
@@ -898,7 +1163,40 @@ class ISAPIClient:
         try:
             return response.content.decode("utf-8")
         except UnicodeDecodeError as err:
-            raise ISAPIError(f"Invalid detection XML: {err}") from err
+            raise ISAPIError(f"Invalid XML from {endpoint}: {err}") from err
+
+    def _get_supported_root(self, endpoint: str) -> ET.Element:
+        """GET and parse a document, as :meth:`_get_supported_xml` gets it."""
+        try:
+            return ET.fromstring(self._get_supported_xml(endpoint).encode("utf-8"))
+        except ET.ParseError as err:
+            raise ISAPIError(f"Invalid XML from {endpoint}: {err}") from err
+
+    def _read_flag(self, endpoint: str, path: str) -> bool:
+        """Return whether a true/false flag of a document is true."""
+        flag = find_by_path(self._get_supported_root(endpoint), path)
+        if flag is None:
+            raise ISAPIError(f"No {path} in {endpoint}")
+        return (flag.text or "").strip().lower() == "true"
+
+    def _write_flag(self, endpoint: str, path: str, enabled: bool) -> ImageWriteResult:
+        """Set a true/false flag of a document, and send the rest back as read.
+
+        Nothing is sent when it is already so. A document without the flag
+        gives ``pathNotFound``, and sends nothing.
+        """
+        original = self._get_supported_xml(endpoint)
+        try:
+            edited, missing = apply_image_changes(
+                original, {path: "true" if enabled else "false"}
+            )
+        except ET.ParseError as err:
+            raise ISAPIError(f"Invalid XML from {endpoint}: {err}") from err
+        if missing:
+            return ImageWriteResult(False, 0, "pathNotFound")
+        if edited == original:
+            return ImageWriteResult(True, 200, "ok")
+        return self._put_image_xml(endpoint, edited)
 
     def get_detection_enabled(
         self, detection: str, channel: Union[int, str] = 1
@@ -918,15 +1216,7 @@ class ISAPIClient:
             ISAPIError: Other errors, a document that is not XML, or one
                 without the flag.
         """
-        endpoint = self._detection_endpoint(detection, channel)
-        xml = self._get_detection_xml(endpoint)
-        try:
-            flag = find_by_path(ET.fromstring(xml.encode("utf-8")), "enabled")
-        except ET.ParseError as err:
-            raise ISAPIError(f"Invalid detection XML: {err}") from err
-        if flag is None:
-            raise ISAPIError(f"No enabled flag in {endpoint}")
-        return (flag.text or "").strip().lower() == "true"
+        return self._read_flag(self._detection_endpoint(detection, channel), "enabled")
 
     def set_detection_enabled(
         self, detection: str, enabled: bool, channel: Union[int, str] = 1
@@ -946,19 +1236,9 @@ class ISAPIClient:
             ISAPINotSupportedError: The device does not have it.
             ISAPIError: The document could not be read or parsed.
         """
-        endpoint = self._detection_endpoint(detection, channel)
-        original = self._get_detection_xml(endpoint)
-        try:
-            edited, missing = apply_image_changes(
-                original, {"enabled": "true" if enabled else "false"}
-            )
-        except ET.ParseError as err:
-            raise ISAPIError(f"Invalid detection XML: {err}") from err
-        if missing:
-            return ImageWriteResult(False, 0, "pathNotFound")
-        if edited == original:
-            return ImageWriteResult(True, 200, "ok")
-        return self._put_image_xml(endpoint, edited)
+        return self._write_flag(
+            self._detection_endpoint(detection, channel), "enabled", enabled
+        )
 
     def get_snapshot(
         self,

@@ -170,6 +170,28 @@ client.get_detection_enabled("lineDetection", channel=2)
 * A detection the device does not have raises `ISAPINotSupportedError`: 404, 501, `notSupport` or `invalidOperation`, also when it comes with a 403. Cameras answer 403 `notSupport` for the detections they lack; that is not about the credentials.
 * A 401, or another 403, raises `ISAPIAuthError`. `get_event_states()` now stops on it instead of trying every other detection with the same credentials.
 
+#### Alarm inputs and outputs, and holidays
+
+```python
+client.get_output_ports()                 # [OutputPort(id='1', name='Siren'), ...]
+client.get_output_active("1")             # False
+client.set_output_active("1", True)       # ImageWriteResult: the device's answer
+client.get_input_ports()                  # [InputPort(id='1', name='Door', enabled=True)]
+client.get_input_active("1")              # True: its signal is on now
+client.set_input_enabled("1", False)      # the input no longer raises alarms
+client.get_io_status()                    # [IOPortState(id='1', type='input', active=True), ...]
+client.get_holidays()                     # [Holiday(id='1', name='Holiday1', enabled=False, mode='date', start='2026-12-24', end='2026-12-26'), ...]
+client.set_holiday_enabled("1", True)
+```
+
+* On an NVR, `proxy=True` gives the ports of the cameras on its digital channels (`/ISAPI/ContentMgmt/IOProxy`): `get_input_ports(proxy=True)`, `get_output_ports(proxy=True)`, `get_io_status(proxy=True)`. Their IDs are the channel times 100 plus the camera's own port (203: port 3 of the camera on channel 2), and are used as is with the other methods.
+* `get_io_status()` reads every state in one request (`/ISAPI/System/IO/status`); the per-port reads are for devices without it.
+* A holiday is a set of dates that the recording and arming schedules treat as holidays while it is enabled: there is no device-wide holiday mode. A holiday is written through `/ISAPI/System/Holidays/<id>`, or within the list on a device without that endpoint.
+* An input and a holiday are written as the detections are: only their `enabled` flag is changed, the rest of the document is sent back as read, and nothing is sent when it is already so.
+* A device without them raises `ISAPINotSupportedError` (404, 501, `notSupport` or `invalidOperation`, also with a 403); the port and holiday lists are then empty. A 401, or another 403, raises `ISAPIAuthError`.
+* An output set to pulse on the device goes back by itself once its pulse ends.
+* `get_output_state()`, `set_output_state()`, `get_holiday_mode_enabled()` (any holiday enabled) and `set_holiday_mode_enabled()` (the first holiday) use them. The getters still return False when they cannot read, but rejected credentials now raise; the setters raise `ISAPIError` when the device refuses.
+
 # TODO
 
 * Support IR day/night status and ability to switch between day/night/auto
