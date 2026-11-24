@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<TamperDetection version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<enabled>false</enabled>
+<normalizedScreenSize>
+<normalizedScreenWidth>704</normalizedScreenWidth>
+<normalizedScreenHeight>480</normalizedScreenHeight>
+</normalizedScreenSize>
+<TamperDetectionRegionList>
+<TamperDetectionRegion>
+<id>0</id>
+<enabled>false</enabled>
+<sensitivityLevel>30</sensitivityLevel>
+<RegionCoordinatesList>
+</RegionCoordinatesList>
+</TamperDetectionRegion>
+</TamperDetectionRegionList>
+</TamperDetection>
