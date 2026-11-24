@@ -329,15 +329,10 @@ class TestISAPIClientMethods(unittest.TestCase):
     def test_get_output_ports(self, mock_xmltodict, mock_session_class):
         """Test getting output ports."""
         session = mock_session_class.return_value
-        self._setup_response(session, IO_OUTPUTS_XML)
-        mock_xmltodict.parse.return_value = {
-            "IOOutputPortList": {
-                "IOOutputPort": {
-                    "id": "1",
-                    "outputName": "Alarm Output 1",
-                }
-            }
-        }
+        response = self._setup_response(session, IO_OUTPUTS_XML)
+        # Read as XML, not through xmltodict.
+        response.content = IO_OUTPUTS_XML.encode()
+        session.request.return_value = response
 
         client = ISAPIClient(host="192.168.1.100")
         client._auth = MagicMock()

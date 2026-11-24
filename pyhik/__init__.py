@@ -10,6 +10,7 @@ from pyhik.hikvision import (
 )
 from pyhik.constants import __version__, VALID_NOTIFICATION_METHODS
 from pyhik.isapi import (
+    DETECTIONS,
     ISAPIClient,
     ISAPIError,
     ISAPIConnectionError,
@@ -23,6 +24,8 @@ from pyhik.isapi import (
     CameraInfo,
     OutputPort,
     InputPort,
+    IOPortState,
+    Holiday,
     EventState,
     DeviceCapabilities,
 )
@@ -47,6 +50,7 @@ __all__ = [
     'VALID_NOTIFICATION_METHODS',
     '__version__',
     # ISAPI client
+    'DETECTIONS',
     'ISAPIClient',
     'ISAPIError',
     'ISAPIConnectionError',
@@ -61,6 +65,8 @@ __all__ = [
     'CameraInfo',
     'OutputPort',
     'InputPort',
+    'IOPortState',
+    'Holiday',
     'EventState',
     'DeviceCapabilities',
     # Image settings
