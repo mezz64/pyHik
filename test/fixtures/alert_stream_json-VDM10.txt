@@ -1,0 +1,393 @@
+--MIME_boundary
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 247
+
+{
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"channelID":	1,
+	"dateTime":	"2026-11-12T17:24:03+01:00",
+	"activePostCount":	1,
+	"eventType":	"videoloss",
+	"eventState":	"inactive",
+	"eventDescription":	"videoloss alarm"
+}
+Content-Type: multipart/form-data; boundary=MIME_boundary
+--MIME_boundary
+Content-Disposition: form-data; name="AccessControllerEvent"
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 414
+
+{
+	"channelID":	1,
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"dateTime":	"2026-11-12T17:23:28+01:00",
+	"activePostCount":	1,
+	"eventType":	"AccessControllerEvent",
+	"eventState":	"active",
+	"eventDescription":	"Access Controller Event",
+	"AccessControllerEvent":	{
+		"deviceName":	"Door",
+		"majorEventType":	1,
+		"subEventType":	3,
+		"serialNo":	90001,
+		"currentEvent":	false
+	}
+}
+--MIME_boundary----MIME_boundary
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 247
+
+{
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"channelID":	1,
+	"dateTime":	"2026-11-12T17:24:13+01:00",
+	"activePostCount":	1,
+	"eventType":	"videoloss",
+	"eventState":	"inactive",
+	"eventDescription":	"videoloss alarm"
+}
+--MIME_boundary
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 247
+
+{
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"channelID":	1,
+	"dateTime":	"2026-11-12T17:24:23+01:00",
+	"activePostCount":	1,
+	"eventType":	"videoloss",
+	"eventState":	"inactive",
+	"eventDescription":	"videoloss alarm"
+}
+--MIME_boundary
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 247
+
+{
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"channelID":	1,
+	"dateTime":	"2026-11-12T17:24:33+01:00",
+	"activePostCount":	1,
+	"eventType":	"videoloss",
+	"eventState":	"inactive",
+	"eventDescription":	"videoloss alarm"
+}
+Content-Type: multipart/form-data; boundary=MIME_boundary
+--MIME_boundary
+Content-Disposition: form-data; name="AccessControllerEvent"
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 413
+
+{
+	"channelID":	1,
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"dateTime":	"2026-11-12T17:24:39+01:00",
+	"activePostCount":	1,
+	"eventType":	"AccessControllerEvent",
+	"eventState":	"active",
+	"eventDescription":	"Access Controller Event",
+	"AccessControllerEvent":	{
+		"deviceName":	"Door",
+		"majorEventType":	1,
+		"subEventType":	3,
+		"serialNo":	90002,
+		"currentEvent":	true
+	}
+}
+--MIME_boundary----MIME_boundary
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 247
+
+{
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"channelID":	1,
+	"dateTime":	"2026-11-12T17:24:43+01:00",
+	"activePostCount":	1,
+	"eventType":	"videoloss",
+	"eventState":	"inactive",
+	"eventDescription":	"videoloss alarm"
+}
+Content-Type: multipart/form-data; boundary=MIME_boundary
+--MIME_boundary
+Content-Disposition: form-data; name="AccessControllerEvent"
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 413
+
+{
+	"channelID":	1,
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"dateTime":	"2026-11-12T17:24:46+01:00",
+	"activePostCount":	1,
+	"eventType":	"AccessControllerEvent",
+	"eventState":	"active",
+	"eventDescription":	"Access Controller Event",
+	"AccessControllerEvent":	{
+		"deviceName":	"Door",
+		"majorEventType":	1,
+		"subEventType":	3,
+		"serialNo":	90003,
+		"currentEvent":	true
+	}
+}
+--MIME_boundary----MIME_boundary
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 247
+
+{
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"channelID":	1,
+	"dateTime":	"2026-11-12T17:24:53+01:00",
+	"activePostCount":	1,
+	"eventType":	"videoloss",
+	"eventState":	"inactive",
+	"eventDescription":	"videoloss alarm"
+}
+Content-Type: multipart/form-data; boundary=MIME_boundary
+--MIME_boundary
+Content-Disposition: form-data; name="AccessControllerEvent"
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 414
+
+{
+	"channelID":	1,
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"dateTime":	"2026-11-12T17:24:56+01:00",
+	"activePostCount":	1,
+	"eventType":	"AccessControllerEvent",
+	"eventState":	"active",
+	"eventDescription":	"Access Controller Event",
+	"AccessControllerEvent":	{
+		"deviceName":	"Door",
+		"majorEventType":	5,
+		"subEventType":	21,
+		"serialNo":	90004,
+		"currentEvent":	true
+	}
+}
+--MIME_boundary--Content-Type: multipart/form-data; boundary=MIME_boundary
+--MIME_boundary
+Content-Disposition: form-data; name="AccessControllerEvent"
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 438
+
+{
+	"channelID":	1,
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"dateTime":	"2026-11-12T17:24:56+01:00",
+	"activePostCount":	1,
+	"eventType":	"AccessControllerEvent",
+	"eventState":	"active",
+	"eventDescription":	"Access Controller Event",
+	"AccessControllerEvent":	{
+		"deviceName":	"Door",
+		"majorEventType":	5,
+		"subEventType":	158,
+		"serialNo":	90005,
+		"currentEvent":	true,
+		"picturesNumber":	1
+	}
+}
+--MIME_boundary--
+--MIME_boundary
+Content-Disposition: form-data; name="Picture"; filename="Picture.jpeg"
+Content-Type: image/jpeg
+Content-Length: 0
+
+Content-Type: multipart/form-data; boundary=MIME_boundary
+--MIME_boundary
+Content-Disposition: form-data; name="AccessControllerEvent"
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 469
+
+{
+	"channelID":	1,
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"dateTime":	"2026-11-12T17:24:57+01:00",
+	"activePostCount":	1,
+	"eventType":	"AccessControllerEvent",
+	"eventState":	"active",
+	"eventDescription":	"Access Controller Event",
+	"AccessControllerEvent":	{
+		"deviceName":	"Door",
+		"majorEventType":	5,
+		"subEventType":	214,
+		"serialNo":	90006,
+		"currentEvent":	true,
+		"picturesNumber":	1,
+		"unlockType":	"householder"
+	}
+}
+--MIME_boundary--
+--MIME_boundary
+Content-Disposition: form-data; name="Picture"; filename="Picture.jpeg"
+Content-Type: image/jpeg
+Content-Length: 0
+
+Content-Type: multipart/form-data; boundary=MIME_boundary
+--MIME_boundary
+Content-Disposition: form-data; name="AccessControllerEvent"
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 414
+
+{
+	"channelID":	1,
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"dateTime":	"2026-11-12T17:24:58+01:00",
+	"activePostCount":	1,
+	"eventType":	"AccessControllerEvent",
+	"eventState":	"active",
+	"eventDescription":	"Access Controller Event",
+	"AccessControllerEvent":	{
+		"deviceName":	"Door",
+		"majorEventType":	5,
+		"subEventType":	22,
+		"serialNo":	90007,
+		"currentEvent":	true
+	}
+}
+--MIME_boundary----MIME_boundary
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 247
+
+{
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"channelID":	1,
+	"dateTime":	"2026-11-12T17:25:03+01:00",
+	"activePostCount":	1,
+	"eventType":	"videoloss",
+	"eventState":	"inactive",
+	"eventDescription":	"videoloss alarm"
+}
+--MIME_boundary
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 247
+
+{
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"channelID":	1,
+	"dateTime":	"2026-11-12T17:25:13+01:00",
+	"activePostCount":	1,
+	"eventType":	"videoloss",
+	"eventState":	"inactive",
+	"eventDescription":	"videoloss alarm"
+}
+--MIME_boundary
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 247
+
+{
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"channelID":	1,
+	"dateTime":	"2026-11-12T17:25:23+01:00",
+	"activePostCount":	1,
+	"eventType":	"videoloss",
+	"eventState":	"inactive",
+	"eventDescription":	"videoloss alarm"
+}
+--MIME_boundary
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 247
+
+{
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"channelID":	1,
+	"dateTime":	"2026-11-12T17:25:33+01:00",
+	"activePostCount":	1,
+	"eventType":	"videoloss",
+	"eventState":	"inactive",
+	"eventDescription":	"videoloss alarm"
+}
+--MIME_boundary
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 247
+
+{
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"channelID":	1,
+	"dateTime":	"2026-11-12T17:25:43+01:00",
+	"activePostCount":	1,
+	"eventType":	"videoloss",
+	"eventState":	"inactive",
+	"eventDescription":	"videoloss alarm"
+}
+--MIME_boundary
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 247
+
+{
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"channelID":	1,
+	"dateTime":	"2026-11-12T17:25:53+01:00",
+	"activePostCount":	1,
+	"eventType":	"videoloss",
+	"eventState":	"inactive",
+	"eventDescription":	"videoloss alarm"
+}
+--MIME_boundary
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 247
+
+{
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"channelID":	1,
+	"dateTime":	"2026-11-12T17:26:03+01:00",
+	"activePostCount":	1,
+	"eventType":	"videoloss",
+	"eventState":	"inactive",
+	"eventDescription":	"videoloss alarm"
+}
+--MIME_boundary
+Content-Type: application/json; charset="UTF-8"
+Content-Length: 247
+
+{
+	"ipAddress":	"192.168.1.100",
+	"portNo":	80,
+	"protocol":	"HTTP",
+	"channelID":	1,
+	"dateTime":	"2026-11-12T17:26:13+01:00",
+	"activePostCount":	1,
+	"eventType":	"videoloss",
+	"eventState":	"inactive",
+	"eventDescription":	"videoloss alarm"
+}
