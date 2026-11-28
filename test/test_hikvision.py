@@ -16,7 +16,8 @@ from pyhik.hikvision import (
     HikCamera, get_video_channels, inject_events_into_camera
 )
 from pyhik.constants import (
-    CONNECT_TIMEOUT, DOWNLOAD_TIMEOUT, NVR_DEVICE, VALID_NOTIFICATION_METHODS
+    CONNECT_TIMEOUT, DOWNLOAD_TIMEOUT, NVR_DEVICE, STREAM_AUTH_RETRY_INTERVAL,
+    VALID_NOTIFICATION_METHODS
 )
 
 XML = """<MotionDetection xmlns="http://www.hikvision.com/ver20/XMLSchema" version="2.0">
@@ -1081,6 +1082,132 @@ class StreamReliabilityTestCase(unittest.TestCase):
         camera.alert_stream(threading.Event(), kill_event)
 
         camera.hik_request_stream.get.assert_not_called()
+
+
+class StreamCredentialsTestCase(unittest.TestCase):
+    """A device that rejects the credentials is not asked again and again."""
+
+    @staticmethod
+    def refused():
+        return MagicMock(status_code=requests.codes.unauthorized)
+
+    def test_two_refusals_in_a_row_slow_the_stream_down(self):
+        camera = make_camera()
+        camera.hik_request_stream = MagicMock()
+        camera.hik_request_stream.get.return_value = self.refused()
+        callback = MagicMock()
+        camera.add_update_callback(callback, "sensor")
+        kill_event = killed_after(1)
+
+        camera.alert_stream(threading.Event(), kill_event)
+
+        self.assertEqual(camera.hik_request_stream.get.call_count, 2)
+        self.assertTrue(camera.stream_auth_failed)
+        self.assertFalse(camera.stream_connected)
+        # Told once, even though the stream was never connected.
+        callback.assert_called_once_with("sensor")
+        # The wait after the second refusal is the long one.
+        kill_event.wait.assert_called_with(STREAM_AUTH_RETRY_INTERVAL)
+
+    def test_the_stream_is_not_given_up(self):
+        """A locked account opens again by itself, and a password that is put
+        back works again, so the thread keeps trying, slowly."""
+        camera = make_camera()
+        camera.hik_request_stream = MagicMock()
+        camera.hik_request_stream.get.return_value = self.refused()
+        callback = MagicMock()
+        camera.add_update_callback(callback, "sensor")
+        kill_event = MagicMock()
+        kill_event.is_set.return_value = False
+        # two short waits after the first refusal, then the long ones
+        kill_event.wait.side_effect = [False, False, False, False, True]
+
+        camera.alert_stream(threading.Event(), kill_event)
+
+        self.assertEqual(camera.hik_request_stream.get.call_count, 4)
+        self.assertEqual(
+            [c.args for c in kill_event.wait.call_args_list[2:]],
+            [(STREAM_AUTH_RETRY_INTERVAL,)] * 3,
+        )
+        self.assertTrue(camera.stream_auth_failed)
+        # Told when it began, not at every attempt.
+        callback.assert_called_once_with("sensor")
+
+    def test_the_flag_is_cleared_when_the_stream_connects_again(self):
+        camera = make_camera()
+        camera.hik_request_stream = MagicMock()
+        connected = MagicMock(status_code=requests.codes.ok,
+                              iter_lines=lambda: iter([]))
+        camera.hik_request_stream.get.side_effect = [
+            self.refused(), self.refused(), connected,
+            requests.exceptions.ConnectionError("no route to host")]
+        seen = []
+        camera.add_update_callback(
+            lambda msg: seen.append(
+                (camera.stream_auth_failed, camera.stream_connected)), "sensor")
+        kill_event = MagicMock()
+        kill_event.is_set.return_value = False
+        kill_event.wait.side_effect = [False, False, False, False, True]
+
+        camera.alert_stream(threading.Event(), kill_event)
+
+        # refused (flag set), connected (flag cleared before the call), down again
+        self.assertEqual(seen[0], (True, False))
+        self.assertEqual(seen[1], (False, True))
+        self.assertFalse(camera.stream_auth_failed)
+
+    def test_one_refusal_is_retried_at_the_usual_pace(self):
+        """A device can answer 401 once for other reasons, such as a reboot."""
+        camera = make_camera()
+        camera.hik_request_stream = MagicMock()
+        camera.hik_request_stream.get.return_value = self.refused()
+        kill_event = killed_after(0)
+
+        camera.alert_stream(threading.Event(), kill_event)
+
+        self.assertEqual(camera.hik_request_stream.get.call_count, 1)
+        self.assertFalse(camera.stream_auth_failed)
+        kill_event.wait.assert_called_with(5)
+
+    def test_a_connection_in_between_starts_the_count_again(self):
+        camera = make_camera()
+        camera.hik_request_stream = MagicMock()
+        connected = MagicMock(status_code=requests.codes.ok,
+                              iter_lines=lambda: iter([]))
+        camera.hik_request_stream.get.side_effect = [
+            self.refused(), connected, self.refused(),
+            requests.exceptions.ConnectionError("no route to host")]
+
+        camera.alert_stream(threading.Event(), killed_after(2))
+
+        self.assertFalse(camera.stream_auth_failed)
+
+    def test_a_connected_stream_that_is_refused_is_reported_as_down(self):
+        """A password changed on the device ends a stream that worked."""
+        camera = make_camera()
+        camera._set_stream_connected(True)
+        camera.hik_request_stream = MagicMock()
+        camera.hik_request_stream.get.return_value = self.refused()
+        callback = MagicMock()
+        camera.add_update_callback(callback, "sensor")
+
+        camera.alert_stream(threading.Event(), killed_after(1))
+
+        self.assertTrue(camera.stream_auth_failed)
+        self.assertFalse(camera.stream_connected)
+        # Once for the first refusal ending the connection, once for the second
+        # one, which is when the flag is set.
+        self.assertEqual(callback.call_count, 2)
+
+    def test_other_failures_never_set_the_flag(self):
+        camera = make_camera()
+        camera.hik_request_stream = MagicMock()
+        camera.hik_request_stream.get.return_value = MagicMock(status_code=503)
+
+        camera.alert_stream(threading.Event(), killed_after(3))
+
+        self.assertEqual(camera.hik_request_stream.get.call_count, 4)
+        self.assertFalse(camera.stream_auth_failed)
 
 
 class StreamConnectedTestCase(unittest.TestCase):
