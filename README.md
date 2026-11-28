@@ -129,14 +129,28 @@ result = client.set_image_setting("Shutter/ShutterLevel", "1/500")
 result.success, result.sub_status          # True, 'ok'
 ```
 
-A write reads the full document, changes only the target value and sends it back, which is what the devices require.
+#### Write Mechanism
 
-* Some settings conflict (enabling WDR while BLC or HLC is on and the reverse); the setting in the way is switched off first.
-* Firmware that reports the HLC conflict as `HLCMutexWDROrDehaze` or `WDROrDehazeMutexHLC` (HTTP 403) is handled the same way: HLC is switched off when WDR or defog is turned on; WDR and defog are switched off when HLC is turned on.
-* The settings that were switched off to make room are listed in `ImageWriteResult.also_changed` (example `{"HLC/enabled": "false"}`).
-* If a conflict cannot be resolved `ImageWriteResult.error_description` has the explanation.
-* Cameras that reject writes to the full document with `notSupport` but accept a per-feature sub-endpoint (example `/ISAPI/Image/channels/1/Shutter`) are handled automatically when all the changes belong to the same feature (example `BLC/enabled` and `BLC/BLCMode`).
-* Writes are not atomic, avoid overlapping writes to the same device.
+* **Read-Modify-Write:** A write operation reads the full document, changes only the target value as text, and sends the updated document back to the device.
+* **Non-Atomic Operations:** Writes are **not atomic**—avoid overlapping or concurrent writes to the same device.
+
+#### Conflict Resolution
+
+Some settings inherently conflict with one another (e.g. enabling WDR while BLC or HLC is active and vice versa). When a conflict occurs:
+
+* **Automatic Override:** The conflicting setting is automatically switched off first to make room for the new setting.
+* **Firmware Error Codes:** Firmware reporting conflicts as `HLCMutexWDROrDehaze` or `WDROrDehazeMutexHLC` (HTTP 403) is handled identically:
+* HLC is switched off when WDR or defog is turned on.
+* WDR and defog are switched off when HLC is turned on.
+
+* **Result Tracking:**
+* `ImageWriteResult.also_changed` lists the settings that were automatically disabled (e.g. `{"HLC/enabled": "false"}`).
+* `ImageWriteResult.error_description` explains any conflicts that could not be resolved.
+
+#### Fallback Handling (Sub-Endpoints)
+
+* **`notSupport` Handling:** If a camera rejects writes to the full document with a `notSupport` error, the system automatically attempts to use per-feature sub-endpoints (example `/ISAPI/Image/channels/1/Shutter`).
+* **Condition:** This fallback only triggers when all requested changes belong to the **same feature** (such as `BLC/enabled` and `BLC/BLCMode`).
 
 For the cameras attached to an NVR, pass `proxy=True` (`/ISAPI/ContentMgmt/ImageProxy/channels/<id>`) and use the IDs returned by `get_image_channels(proxy=True)`:
 
@@ -155,6 +169,12 @@ Recorders do not always report what they are; be ready to fall back to the NVR e
 * An NVR may reject the camera endpoints (`/ISAPI/Image/channels`) with HTTP 503 `serviceUnavailable` or 400 `badXmlContent`. pyhik raises a plain `ISAPIError` for these; catching only `ISAPINotSupportedError` will not catch them.
 * `ISAPINotSupportedError` only means that the device says it does not offer the endpoint: HTTP 404, 501 or a `notSupport` reply.
 * For any other error, check `status_code` and `sub_status` on the exception.
+
+### Checking the ISAPI image settings
+
+`python -m pyhik checkisapi` tries the image settings code against a real camera or NVR.
+[TESTING.md](TESTING.md) has the instructions to use it and can be used to report a
+problem.
 
 # TODO
 
